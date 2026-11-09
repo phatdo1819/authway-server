@@ -1,0 +1,7 @@
+.git
+data
+dist
+web/node_modules
+internal/admin/ui/dist
+*.exe
+.env

@@ -1,0 +1,7 @@
+/data/
+/dist/
+/web/node_modules/
+/internal/admin/ui/dist/
+*.exe
+# the settings of this host for compose.yaml
+/.env

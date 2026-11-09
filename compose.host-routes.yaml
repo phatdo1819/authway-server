@@ -1,0 +1,66 @@
+# For routed servers, with the container on the Docker bridge of compose.yaml: a helper on the network of the Docker
+# host adds there a route to the tunnel network of each routed server through the container. The router of the
+# networks then needs only a route to that tunnel network through the address of the Docker host, 192.168.1.10 say:
+# the server shows it. A server is routed in its settings: What the networks see of the peers.
+#
+# With compose.yaml, in the file .env next to them:
+#   COMPOSE_FILE=compose.yaml:compose.host-routes.yaml
+# (with a compose.override.yaml, list it too: compose.yaml:compose.override.yaml:compose.host-routes.yaml, Compose
+# reads it by itself only without COMPOSE_FILE) then: docker compose up -d. Nothing else to set: a route goes when its
+# server isn't routed any more, and all of them when the helper stops. ip route show proto 77 lists them.
+#
+# The helper:
+# - shares only a folder in memory with Authway Server: the routes it asks for, and what the helper did
+# - changes only its own routes, and its own rules in the chain DOCKER-USER of Docker (comment authway-server), that
+#   let through the connections started from the networks to a server that takes them
+# - refuses a tunnel network that overlaps a network of the host, or that the host already has a route to
+# - needs NET_ADMIN on the network of the host: that's why it's a file of its own, for routed servers only
+# - works on a virtual machine and on Wi-Fi, unlike compose.macvlan.yaml: the container needs no MAC address of its
+#   own, and the web UI stays at the address of the host
+services:
+  authway-server:
+    environment:
+      AUTHWAY_HOST_ROUTES: /host-routes
+    volumes:
+      - host-routes:/host-routes
+
+  host-routes:
+    # the image of authway-server, built by it: nothing to pull
+    image: authway-server:latest
+    pull_policy: never
+    container_name: authway-host-routes
+    command: host-routes
+    depends_on:
+      - authway-server
+    restart: unless-stopped
+    network_mode: host
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    environment:
+      AUTHWAY_HOST_ROUTES: /host-routes
+    volumes:
+      - host-routes:/host-routes
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/authway-server", "host-routes", "-health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  # in memory: gone at the next start of the host, when the routes are gone too
+  host-routes:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=0700

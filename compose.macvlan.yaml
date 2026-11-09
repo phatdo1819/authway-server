@@ -1,0 +1,51 @@
+# For routed servers, the other way: the container gets an address of its own in the local network, on a macvlan
+# network, instead of the Docker bridge behind the address of the host. The router of the networks then sends the
+# tunnel networks back to that address, and the networks see the address of each peer. A server is routed in its
+# settings: What the networks see of the peers. The other servers keep NAT, with the address of the container.
+# compose.host-routes.yaml is simpler, and works on a virtual machine and on Wi-Fi: this file is for a container
+# that has to be on the local network itself.
+#
+# With compose.yaml, in the file .env next to them:
+#   COMPOSE_FILE=compose.yaml:compose.macvlan.yaml
+#   AUTHWAY_LAN_PARENT=eth0              the interface of the host in the local network: ip -br address
+#   AUTHWAY_LAN_SUBNET=192.168.1.0/24    the local network
+#   AUTHWAY_LAN_GATEWAY=192.168.1.1      its router
+#   AUTHWAY_LAN_ADDRESS=192.168.1.50     a free address for the container, outside the range of the DHCP server
+# then: docker compose down, and docker compose up -d. The data folder stays the same.
+#
+# Then:
+# - the web UI is at https://192.168.1.50:8443, and the WireGuard ports at 192.168.1.50 too: the router forwards the
+#   UDP ports from the internet to that address, no longer to the host
+# - the router of the networks has a route to each tunnel network of a routed server through 192.168.1.50: the
+#   server shows it, and the System page checks the way
+# - the Docker host itself can't reach the container, macvlan keeps them apart: use the web UI from another computer
+# - a host that is a virtual machine needs its virtual switch to let the MAC address of the container through, in
+#   promiscuous mode: VMware Fusion, Settings > Network, uncheck "Require authentication to enter promiscuous mode";
+#   ESXi, Promiscuous mode and Forged transmits on Accept; Hyper-V, Enable MAC address spoofing; VirtualBox,
+#   Promiscuous Mode Allow All. docs/routed-servers.md has the list. A host on Wi-Fi can't: use a cable. Most cloud
+#   servers can't either: use compose.host-routes.yaml there
+# - ipvlan doesn't work: the containers share the MAC address of the host, and the kernel gives the packets for the
+#   tunnels to the host
+services:
+  authway-server:
+    # nothing published on the host: the container has its own address. Needs Docker Compose 2.24 or later
+    ports: !reset []
+    networks:
+      lan:
+        ipv4_address: ${AUTHWAY_LAN_ADDRESS:?set AUTHWAY_LAN_ADDRESS in .env, see compose.macvlan.yaml}
+        # IPv6 of the local network, for the IPv6 tunnels: a free address, with the lines of the network below
+        # ipv6_address: 2001:db8:1::50
+
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${AUTHWAY_LAN_PARENT:?set AUTHWAY_LAN_PARENT in .env, see compose.macvlan.yaml}
+    # the IPv6 tunnels need IPv6 on this network: the prefix and the router of the local network
+    # enable_ipv6: true
+    ipam:
+      config:
+        - subnet: ${AUTHWAY_LAN_SUBNET:?set AUTHWAY_LAN_SUBNET in .env, see compose.macvlan.yaml}
+          gateway: ${AUTHWAY_LAN_GATEWAY:?set AUTHWAY_LAN_GATEWAY in .env, see compose.macvlan.yaml}
+        # - subnet: 2001:db8:1::/64
+        #   gateway: 2001:db8:1::1

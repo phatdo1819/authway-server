@@ -1,0 +1,2 @@
+# the scripts run on Linux: never with Windows line ends, whatever the computer that commits them
+*.sh text eol=lf

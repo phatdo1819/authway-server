@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* the same blue as the icon and as Authway */
+@layer base {
+  :root {
+    color-scheme: light dark;
+    /* the charts of the System page: two series, checked for color blindness on the cards (white, slate-900) */
+    --chart-1: #2a78d6;
+    --chart-2: #eb6834;
+    --chart-surface: #ffffff;
+    --chart-grid: #e2e8f0;
+    --chart-axis: #cbd5e1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --chart-1: #3987e5;
+      --chart-2: #d95926;
+      --chart-surface: #0f172a;
+      --chart-grid: #1e293b;
+      --chart-axis: #334155;
+    }
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}

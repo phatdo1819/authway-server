@@ -1,0 +1,63 @@
+# docker compose up -d --build
+# The first administrator and its password are printed once in: docker compose logs authway-server
+#
+# The settings of this file can go in a file .env next to it, so this one stays as it is (install.sh writes them):
+#   AUTHWAY_PUBLIC_HOST=vpn.example.com  the public name or IP of this host, where the peers connect: the default of
+#                                        new WireGuard servers, each one can have another
+#   AUTHWAY_UI_ADDRESS=192.168.1.10    the address of the host in the local network: the web UI only there (an IPv6
+#                                      address of the host works too, one address)
+#   AUTHWAY_VERSION=0.1.0+abc1234      what the web UI shows, to tell builds apart (the version of the source if empty)
+#   TZ=Europe/Rome                     the time zone of the log and of the System page (UTC if empty)
+services:
+  authway-server:
+    build:
+      context: .
+      args:
+        VERSION: ${AUTHWAY_VERSION:-}
+    image: authway-server:latest
+    container_name: authway-server
+    restart: unless-stopped
+    # only what it needs: the WireGuard interfaces and the nftables rules of the gate, inside the network of the
+    # container. No other right, no way to get more, and nothing written outside /data
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+      # IPv6 in the tunnels, forwarded as IPv4 is. A host whose kernel has no IPv6 at all refuses it: take this line
+      # and the networks part at the end away
+      - net.ipv6.conf.all.forwarding=1
+    environment:
+      # the public name or IP of this host: the default address of new WireGuard servers. In .env
+      AUTHWAY_PUBLIC_HOST: ${AUTHWAY_PUBLIC_HOST:-vpn.example.com}
+      TZ: ${TZ:-}
+    ports:
+      # one UDP port for each WireGuard server: 51820 for the first, 51821 for the second... Over IPv4 and IPv6
+      - "51820-51829:51820-51829/udp"
+      # the web UI: keep it on the local network, never open it to the internet. Without AUTHWAY_UI_ADDRESS, on
+      # every address of the host, and Docker's rules come before a firewall like ufw
+      - "${AUTHWAY_UI_ADDRESS:-0.0.0.0}:8443:8443"
+    volumes:
+      - ./data:/data
+    # the log of the container, docker compose logs: 3 files of 10 MB at most, the oldest goes
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+# IPv6 on the network of the container: Docker 27 or later gives it a /64 of unique local addresses of its own, and
+# sends its IPv6 out through the host as it does IPv4. The peers then reach IPv6 networks and the internet over
+# IPv6, and the WireGuard ports see the real IPv6 address of each device: without it, Docker's proxy passes the
+# devices that connect over IPv6 on from one IPv4 address of its own, and the lock to the public IP can't tell them
+# apart. A change here needs docker compose down, then up -d: Docker creates the network again
+networks:
+  default:
+    enable_ipv6: true

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>VPN login</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="card" aria-live="polite">
+    <header class="brand">
+      <img src="icon.svg" alt="" width="40" height="40">
+      <div>
+        <h1 id="title">VPN login</h1>
+        <p id="server" class="muted"></p>
+      </div>
+    </header>
+
+    <section id="loading" class="state">
+      <p class="muted">Checking your connection…</p>
+    </section>
+
+    <form id="login" class="state" hidden novalidate>
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div id="otp-field" hidden>
+        <label for="otp">Authenticator code</label>
+        <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}">
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
+      <button id="submit" type="submit">Log in</button>
+    </form>
+
+    <section id="done" class="state" hidden>
+      <div class="ok">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>You're connected</span>
+      </div>
+      <dl>
+        <dt>User</dt><dd id="user"></dd>
+        <dt>Session ends</dt><dd id="expires"></dd>
+      </dl>
+      <p class="muted">You can close this page. Come back here to log in again when the session ends.</p>
+      <button id="logout" type="button" class="secondary">Log out</button>
+    </section>
+
+    <section id="problem" class="state" hidden>
+      <p id="problem-text" class="notice"></p>
+      <button id="retry" type="button" class="secondary">Try again</button>
+    </section>
+  </main>
+</body>
+</html>
