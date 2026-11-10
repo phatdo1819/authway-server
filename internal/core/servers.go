@@ -64,6 +64,8 @@ type ServerInput struct {
 	// connections to the peers
 	Routed  bool `json:"routed"`
 	Inbound bool `json:"inbound"`
+	// when edited: the version the form opened with, see ChangedError; 0 doesn't check it
+	Version int64 `json:"version"`
 }
 
 const MaxFallbacks = 4
@@ -183,7 +185,7 @@ func (s *Service) CreateServer(by Actor, input ServerInput) (*ServerView, error)
 	}
 	server.PrivateKey = key.String()
 	now := s.now().Unix()
-	server.CreatedAt, server.UpdatedAt = now, now
+	server.CreatedAt, server.UpdatedAt, server.UpdatedBy = now, now, by.Username
 	if err := q.CreateServer(server); err != nil {
 		return nil, takenOr(err, "name")
 	}
@@ -206,6 +208,13 @@ func (s *Service) UpdateServer(by Actor, id int64, input ServerInput) (*ServerVi
 	if err != nil {
 		return nil, notFound(err)
 	}
+	if stale(input.Version, server.Version) {
+		view, err := s.serverViewLocked(server)
+		if err != nil {
+			return nil, err
+		}
+		return nil, &ChangedError{Current: view, By: server.UpdatedBy, At: server.UpdatedAt}
+	}
 	servers, err := q.Servers()
 	if err != nil {
 		return nil, err
@@ -217,18 +226,22 @@ func (s *Service) UpdateServer(by Actor, id int64, input ServerInput) (*ServerVi
 	if err := s.checkIPv6Locked(server, before.Network6); err != nil {
 		return nil, err
 	}
+	peers, err := q.Peers(id)
+	if err != nil {
+		return nil, err
+	}
 	// the IPv6 network can come, go or change with peers: their addresses follow, and their files of before keep
 	// working on IPv4
-	if server.Network != before.Network {
-		peers, err := q.Peers(id)
-		if err != nil {
-			return nil, err
-		}
-		if len(peers) > 0 {
-			return nil, &ValidationError{Fields: map[string]string{"network": "has_peers"}}
-		}
+	if server.Network != before.Network && len(peers) > 0 {
+		return nil, &ValidationError{Fields: map[string]string{"network": "has_peers"}}
 	}
-	server.UpdatedAt = s.now().Unix()
+	// the networks keep what the access rules of the peers reach
+	var c checks
+	checkNetworksOfPeers(server, peers, &c)
+	if err := c.err(); err != nil {
+		return nil, err
+	}
+	server.UpdatedAt, server.UpdatedBy = s.now().Unix(), by.Username
 	if err := q.UpdateServer(server); err != nil {
 		return nil, takenOr(err, "name")
 	}
@@ -299,6 +312,7 @@ func (s *Service) DeleteServer(by Actor, id int64) error {
 			kept := withoutID(other.ReachableServers, id)
 			if len(kept) != len(other.ReachableServers) {
 				other.ReachableServers = kept
+				other.UpdatedAt, other.UpdatedBy = s.now().Unix(), by.Username
 				if err := s.db.Q().UpdateServer(other); err != nil {
 					s.log.Error("can't update a server", "name", other.Name, "error", err)
 				}

@@ -55,9 +55,10 @@ sudo ./install.sh --yes --public-host vpn.example.com --ui-address 192.168.1.10
 | `--timezone ZONE` | The time zone of the log, `Europe/Rome` say. The one of the host if not given. |
 | `--host-routes`, `--no-host-routes` | Turn on or off the [routed servers through the Docker host](routed-servers.md#through-the-docker-host). |
 | `--dir DIR` | The install folder: `/opt/authway-server`, or the folder of the Authway Server that already runs. |
-| `--image REF` | Use a published image instead of building one, `ghcr.io/phatdo1819/authway-server:0.1.0`: for a host with little memory. |
+| `--image REF` | Use a published image instead of building one, `ghcr.io/phatdo1819/authway-server:0.2.0`: for a host with little memory. |
 | `--repo URL`, `--ref REF` | Get the source with git, when the script runs alone, not from a copy of the source. |
 | `--no-docker-install` | Stop instead of installing Docker when it's missing. |
+| `--rollback` | Go back to the version before the last upgrade: see [Go back](#go-back). |
 | `--uninstall` | Stop and remove the containers and the image. The install folder and its data stay. |
 | `-y`, `--yes` | Ask nothing. |
 
@@ -121,11 +122,41 @@ cd authway-server && git pull
 sudo ./install.sh
 ```
 
-The data, `.env` and `compose.override.yaml` stay. Before the new version starts, the database is copied to
-`data/pre-upgrade-<date>`, the newest 5 copies kept: to go back, stop Authway Server, copy the files of a copy back
-into `data/`, and start the version of before. The database of a newer version may not open in an older one.
+The data, `.env` and `compose.override.yaml` stay. The script:
 
-By hand: `git pull && docker compose up -d --build`.
+1. keeps the image that runs now as `authway-server:previous`;
+2. builds the new one, or pulls it with `--image`;
+3. stops Authway Server and copies the database to `data/pre-upgrade-<date>`, the newest 5 copies kept;
+4. says when the new version changes the **schema** of the database, `schema 7 → 8` say;
+5. starts the new version, which changes the schema as it starts, and waits until it's healthy.
+
+### Schema changes
+
+Some versions add to the database: the access rules of the peers, for one. The new version changes the schema at
+its first start, by itself, and an older version can't open the database then: it stops at once with *the database
+is from a newer version of Authway Server*, rather than run without what it doesn't know, and let the peers reach
+more than their rules say. So before changing the schema, Authway Server copies the database to
+`data/before-schema<N>-<date>/authway.db`, also when it's upgraded by hand, and its log says so.
+
+### Go back
+
+```sh
+sudo ./install.sh --rollback
+```
+
+It goes back to the version before the last upgrade done with the script, `authway-server:previous`:
+
+- **The upgrade didn't change the schema**: the database stays, with everything changed since.
+- **It changed it**: the copy made by the upgrade goes back, and the database of the newer version goes aside to
+  `data/pre-rollback-<date>`. What changed since the upgrade, users, peers or settings, isn't in the copy.
+
+It goes back one version, once. To upgrade again, run `sudo ./install.sh` from the newer source.
+
+### By hand
+
+`git pull && docker compose up -d --build`. To go back by hand after a schema change: stop Authway Server with
+`docker compose stop`, move the files `data/authway.db*` aside, copy `authway.db` from the newest
+`data/before-schema<N>-<date>` back into `data/`, and start the version of before.
 
 ## Uninstall
 

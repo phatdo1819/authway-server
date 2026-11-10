@@ -32,8 +32,8 @@ import (
 	"github.com/phatdo1819/authway-server/internal/system"
 )
 
-// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.1.0+abc1234"
-var version = "0.1.0"
+// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.2.0+abc1234"
+var version = "0.2.0"
 
 type config struct {
 	data          string
@@ -126,7 +126,37 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "host-routes" {
 		os.Exit(hostRoutes(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "schema" {
+		os.Exit(schema(os.Args[2:]))
+	}
 	os.Exit(run(os.Args[1:]))
+}
+
+// schema prints the version of the schema of the database of this version of Authway Server, or with -data the one
+// of the database in that folder, 0 without one, without changing it: for the install script, while Authway Server is
+// stopped.
+//
+//	authway-server schema [-data folder]
+func schema(args []string) int {
+	flags := flag.NewFlagSet("schema", flag.ContinueOnError)
+	data := flags.String("data", "", "a folder with a database, authway.db: its schema instead")
+	flags.Usage = func() {
+		fmt.Fprintln(flags.Output(), "usage: authway-server schema [-data folder]")
+	}
+	if err := flags.Parse(args); err != nil || flags.NArg() > 0 {
+		return 2
+	}
+	if *data == "" {
+		fmt.Println(store.Schema())
+		return 0
+	}
+	version, err := store.SchemaOf(filepath.Join(*data, "authway.db"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "can't read the database:", err)
+		return 1
+	}
+	fmt.Println(version)
+	return 0
 }
 
 // hostRoutes is the helper of compose.host-routes.yaml, on the network of the Docker host: while Authway Server asks
@@ -256,6 +286,10 @@ func run(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	if m := db.Migrated; m.To != 0 {
+		log.Info("the schema of the database changed: the version of before starts again with the copy", "from", m.From,
+			"to", m.To, "copy", m.Copy)
+	}
 
 	var net network.Network
 	if c.fakeNetwork {

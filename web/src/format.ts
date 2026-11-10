@@ -374,6 +374,8 @@ const messages: Record<string, string> = {
   ipv6_off: 'IPv6 is off in the container: turn it on as compose.yaml does, then create the container again.',
   no_networks: 'Add a network the peers reach: only those are routed, the internet of the peers stays NAT.',
   has_peers: "Can't change while the server has peers: their configuration files have the old addresses.",
+  outside: 'Not inside the networks of the server.',
+  in_peer_access: 'A peer reaches part of a network taken away: change its networks first.',
   has_peer: 'This user already has a peer on this server.',
   network_full: 'No address left in the network of the server.',
   wrong: 'Wrong password.',
@@ -392,6 +394,9 @@ const messages: Record<string, string> = {
   server_not_found: 'One of these servers no longer exists: reload the page.',
   duplicate_server: 'A server appears twice.',
   device_binding_not_required: "This server doesn't ask for a device.",
+  // the rows of an import
+  twice: 'This username is on a row above too.',
+  extra_cells: 'More cells than the header has columns.',
 }
 
 export function fieldMessage(code: string | undefined): string {
@@ -410,6 +415,8 @@ export function errorMessage(error: unknown): string {
       return 'It no longer exists: reload the page.'
     case 'validation':
       return 'Check the fields in red.'
+    case 'changed':
+      return 'Another administrator saved it meanwhile: open it again.'
     case 'too_many_attempts':
       return 'Too many attempts: wait a few minutes.'
     case 'invalid_credentials':

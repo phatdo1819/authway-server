@@ -208,7 +208,7 @@ func TestPeers(t *testing.T) {
 			t.Errorf("missing %q in\n%s", want, text)
 		}
 	}
-	if name != "Office-0.conf" {
+	if name != "Office-0-alice-laptop.conf" {
 		t.Errorf("file name %q", name)
 	}
 	if got := f.net.State.Servers[0].Peers; len(got) != 1 || got[0].Address.String() != "10.8.0.2" {

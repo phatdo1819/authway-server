@@ -8,6 +8,9 @@
 - **Peers in a few clicks**: a configuration file to download, or a QR code for the phones. The address of a new peer
   in the tunnel is the next free one. On a server with login each peer belongs to a user, one peer per user and
   server.
+- **Many users at once**, from a CSV file made with a spreadsheet: a username, a full name and a password for each.
+  Every row is checked and shown before anything is added, and the file is imported whole or not at all. The
+  passwords left empty are made by the server and shown once.
 - **IPv4 and IPv6 in the tunnels**: a server can have an IPv6 network besides its IPv4 one, and each of its peers then
   has the IPv6 address that matches its IPv4 one: `10.8.0.5` is `…::5`. The devices reach the server over IPv4 or
   IPv6.
@@ -50,6 +53,11 @@ server can add more:
 
 - **What the peers reach**: the networks you list for each server, your LAN for example, or everything for a peer
   that sends all its traffic through the tunnel.
+- **Access rules for each peer**: a peer can reach only some of the networks of its server, down to single
+  addresses: the file server for one user, the printer for another. The firewall of the server enforces them, with
+  NAT and routed alike, whatever the configuration file says. With all its traffic through the tunnel, such a peer
+  reaches the internet too, but no other private network. On a server with login each user has one peer, so these
+  are the access rules of the user.
 - **NAT or routed**, for each server: its networks see the address of the host, with nothing to set up, or the address
   of each peer, for their logs and firewall rules. Routed, they can also start connections to the peers logged in.
   See [Routed servers](routed-servers.md).
@@ -64,11 +72,12 @@ server can add more:
 - **Alerts**: lockouts, copied configurations, a device that isn't the enrolled one.
 - **An audit trail**: every change made in the web UI is an event, with the administrator who made it, from which
   address, and what changed. Opening the configuration file of a peer, with its private key, is one too.
-- **A System page** for when something goes wrong: checks of what breaks most (the configuration applied, WireGuard
-  read, the interfaces of the servers up, IP forwarding, IPv6, the way of the routed servers to their networks, the
-  clock, the disk, the memory, the load, connection tracking, errors in the log), the processors, the memory and the
-  traffic of each interface with their history of the last 24 hours, the disks, the host, and the latest lines of the
-  log.
+- **A System page** for when something goes wrong, in tabs: the checks of what breaks most (the configuration
+  applied, WireGuard read, the interfaces of the servers up, IP forwarding, IPv6, the way of the routed servers to
+  their networks, the clock, the disk, the memory, the load, connection tracking, errors in the log) with a summary;
+  the history of the last 24 hours of the processors, the memory and the traffic of each interface; the network
+  interfaces; the disks, the host and Authway Server; and the latest lines of the log. A dot on a tab says it has a
+  warning or an error.
 
 ## Administration
 
@@ -78,6 +87,9 @@ server can add more:
   else is changed at the first login.
 - **A password policy** for the users and the administrators: minimum length, lowercase, uppercase, digit, symbol,
   never the username.
+- **Two administrators at once**: a form saved over a change that another administrator made since it opened is
+  refused instead of undoing it. The form then shows who changed what, takes their changes on the fields you didn't
+  touch, keeps yours, and asks which to keep where you both changed the same field.
 - **Backup and restore** of the whole configuration, in a file encrypted with a passphrase.
 - **HTTPS for the web UI** with a self-signed certificate made and renewed by itself, or your own.
 - **A locked-down container**: no right but `NET_ADMIN`, a read-only system, and nothing written outside `./data`. A

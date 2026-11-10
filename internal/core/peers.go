@@ -21,6 +21,11 @@ type PeerInput struct {
 	UserID   int64  `json:"user_id"`
 	RouteAll bool   `json:"route_all"`
 	Address  string `json:"address"`
+	// the access rules: the networks the peer reaches, inside the ones of its server; [] for all of them. Missing,
+	// they stay as they are
+	Access *[]string `json:"access"`
+	// when edited: the version the form opened with, see ChangedError; 0 doesn't check it
+	Version int64 `json:"version"`
 }
 
 func (s *Service) CreatePeer(by Actor, serverID int64, input PeerInput) (*PeerView, error) {
@@ -61,7 +66,7 @@ func (s *Service) CreatePeer(by Actor, serverID int64, input PeerInput) (*PeerVi
 		return nil, err
 	}
 	now := s.now().Unix()
-	peer.CreatedAt, peer.UpdatedAt = now, now
+	peer.CreatedAt, peer.UpdatedAt, peer.UpdatedBy = now, now, by.Username
 	if err := q.CreatePeer(peer); err != nil {
 		return nil, takenOr(err, "name")
 	}
@@ -70,6 +75,9 @@ func (s *Service) CreatePeer(by Actor, serverID int64, input PeerInput) (*PeerVi
 	detail := peer.Address
 	if peer.RouteAll {
 		detail += ", all the traffic"
+	}
+	if peer.Access != nil {
+		detail += ", reaches " + accessText(peer.Access)
 	}
 	if !peer.Enabled {
 		detail += ", disabled"
@@ -92,6 +100,13 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	if err != nil {
 		return nil, notFound(err)
 	}
+	if stale(input.Version, peer.Version) {
+		view, err := s.peerViewLocked(peer)
+		if err != nil {
+			return nil, err
+		}
+		return nil, &ChangedError{Current: view, By: peer.UpdatedBy, At: peer.UpdatedAt}
+	}
 	peers, err := q.Peers(peer.ServerID)
 	if err != nil {
 		return nil, err
@@ -100,7 +115,7 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	if err := s.checkPeer(input, server, peer, peers); err != nil {
 		return nil, err
 	}
-	peer.UpdatedAt = s.now().Unix()
+	peer.UpdatedAt, peer.UpdatedBy = s.now().Unix(), by.Username
 	if err := q.UpdatePeer(peer); err != nil {
 		return nil, takenOr(err, "name")
 	}
@@ -112,6 +127,7 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	}
 	c.text("user", s.usernameLocked(before.UserID), s.usernameLocked(peer.UserID))
 	c.toggle("all the traffic through the tunnel", before.RouteAll, peer.RouteAll)
+	c.text("reaches", accessText(before.Access), accessText(peer.Access))
 	if len(c) > 0 {
 		s.changeLocked(by, store.Event{Kind: "peer_changed", ServerName: server.Name, PeerName: peer.Name,
 			Username: s.usernameLocked(peer.UserID), Detail: c.String()})
@@ -178,7 +194,7 @@ func (s *Service) RegeneratePeerKeys(by Actor, id int64) (*PeerView, error) {
 		detail += ", unblocked"
 	}
 	peer.Blocked = false
-	peer.UpdatedAt = s.now().Unix()
+	peer.UpdatedAt, peer.UpdatedBy = s.now().Unix(), by.Username
 	if err := q.UpdatePeer(peer); err != nil {
 		return nil, err
 	}
@@ -241,7 +257,7 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 	tunnel6 := tunnel6Of(server)
 	// invalid without an IPv6 network
 	other, _ := address6(tunnel.Masked(), tunnel6, address)
-	networks := append(append([]string{}, server.Networks...), s.linkedNetworksLocked(server)...)
+	networks := append(allowedNetworks(server, peer), s.linkedNetworksLocked(server)...)
 	config := peerconf.Config{
 		PeerName:        peer.Name,
 		ServerName:      server.Name,
@@ -262,7 +278,7 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 	}
 	s.changeLocked(by, store.Event{Kind: "peer_config", ServerName: server.Name, PeerName: peer.Name,
 		Username: s.usernameLocked(peer.UserID)})
-	return peerconf.FileName(server.Name), config.String(), nil
+	return peerconf.FileName(server.Name, peer.Name), config.String(), nil
 }
 
 // linkedNetworksLocked are the tunnel networks of the servers linked to a server: the ones its peers reach, and the
@@ -330,6 +346,7 @@ func (s *Service) checkPeer(input PeerInput, server *store.Server, peer *store.P
 			c.fail("name", "taken")
 		}
 	}
+	access := checkAccess(input.Access, peer.Access, server, &c)
 	if err := c.err(); err != nil {
 		return err
 	}
@@ -337,6 +354,7 @@ func (s *Service) checkPeer(input PeerInput, server *store.Server, peer *store.P
 	peer.Enabled = input.Enabled
 	peer.UserID = input.UserID
 	peer.RouteAll = input.RouteAll
+	peer.Access = access
 	return nil
 }
 

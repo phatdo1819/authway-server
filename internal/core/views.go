@@ -56,6 +56,10 @@ type ServerView struct {
 	Sessions         int   `json:"sessions"`
 	CreatedAt        int64 `json:"created_at"`
 	UpdatedAt        int64 `json:"updated_at"`
+	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
+	// made since refuses the save. UpdatedBy made the latest one
+	Version   int64  `json:"version"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 // DeviceView is the device of a peer of a server with device binding.
@@ -84,21 +88,31 @@ type PeerView struct {
 	Username string `json:"username"`
 	Address  string `json:"address"`
 	// "" when the server has no IPv6 network
-	Address6      string       `json:"address6"`
-	PublicKey     string       `json:"public_key"`
-	RouteAll      bool         `json:"route_all"`
-	Blocked       bool         `json:"blocked"`
-	Alerts        int          `json:"alerts"`
-	Connected     bool         `json:"connected"`
-	LastHandshake int64        `json:"last_handshake"`
-	Endpoint      string       `json:"endpoint"`
-	Received      int64        `json:"received"`
-	Sent          int64        `json:"sent"`
-	Session       *SessionView `json:"session"`
+	Address6  string `json:"address6"`
+	PublicKey string `json:"public_key"`
+	RouteAll  bool   `json:"route_all"`
+	// the access rules: the networks the peer reaches, [] for all the networks of its server
+	Access        []string `json:"access"`
+	Blocked       bool     `json:"blocked"`
+	Alerts        int      `json:"alerts"`
+	Connected     bool     `json:"connected"`
+	LastHandshake int64    `json:"last_handshake"`
+	Endpoint      string   `json:"endpoint"`
+	// without a handshake WireGuard knows of, since the interface came up: the latest time the history saw the peer,
+	// and from where; 0 when it never connected
+	LastSeen     int64        `json:"last_seen"`
+	LastEndpoint string       `json:"last_endpoint"`
+	Received     int64        `json:"received"`
+	Sent         int64        `json:"sent"`
+	Session      *SessionView `json:"session"`
 	// only on a server with device binding
 	Device    *DeviceView `json:"device"`
 	CreatedAt int64       `json:"created_at"`
 	UpdatedAt int64       `json:"updated_at"`
+	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
+	// made since refuses the save. UpdatedBy made the latest one
+	Version   int64  `json:"version"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 type SessionView struct {
@@ -141,6 +155,10 @@ type UserView struct {
 	Sessions  int      `json:"sessions"`
 	CreatedAt int64    `json:"created_at"`
 	UpdatedAt int64    `json:"updated_at"`
+	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
+	// made since refuses the save. UpdatedBy made the latest one
+	Version   int64  `json:"version"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 type EventView struct {
@@ -186,8 +204,59 @@ func sessionView(session store.Session) *SessionView {
 	}
 }
 
+// connectedLocked tells whether a peer is connected: a handshake younger than ConnectedWindow, and, when its server gives
+// the peers a keepalive, something received within activeWindow. A connected peer sends at least once a keepalive,
+// so one that's gone shows within a minute, not after the three of the handshake.
 func (s *Service) connectedLocked(stats network.PeerStats) bool {
-	return !stats.LastHandshake.IsZero() && s.now().Sub(stats.LastHandshake) < ConnectedWindow
+	now := s.now()
+	if stats.LastHandshake.IsZero() || now.Sub(stats.LastHandshake) >= ConnectedWindow {
+		return false
+	}
+	keepalive := s.keepalives[stats.Interface]
+	// a handshake is the peer answering too
+	last := stats.Active
+	if stats.LastHandshake.After(last) {
+		last = stats.LastHandshake
+	}
+	return keepalive <= 0 || now.Sub(last) < activeWindow(keepalive)
+}
+
+// activeWindow is how long a connected peer stays silent at most, with a keepalive in seconds: two keepalives and a
+// tick, so one keepalive lost on the way doesn't show it gone.
+func activeWindow(keepalive int) time.Duration {
+	return 2*time.Duration(keepalive)*time.Second + TickInterval
+}
+
+// followActivityLocked notes when each peer last sent something, its received counter growing, and gives it to its
+// stats as Active. A peer seen for the first time, or whose counters started again with its interface, last sent at
+// its handshake, as far as anyone knows.
+func (s *Service) followActivityLocked(stats map[wgtypes.Key]network.PeerStats, now time.Time) {
+	if s.activity == nil {
+		s.activity = map[wgtypes.Key]peerActivity{}
+	}
+	for key, entry := range stats {
+		activity, ok := s.activity[key]
+		switch {
+		case !ok || entry.Received < activity.received:
+			activity = peerActivity{received: entry.Received, at: entry.LastHandshake}
+		case entry.Received > activity.received:
+			activity = peerActivity{received: entry.Received, at: now}
+		}
+		s.activity[key] = activity
+		entry.Active = activity.at
+		stats[key] = entry
+	}
+	for key := range s.activity {
+		if _, ok := stats[key]; !ok {
+			delete(s.activity, key)
+		}
+	}
+}
+
+// peerActivity is the received counter of a peer, and when it last grew
+type peerActivity struct {
+	received int64
+	at       time.Time
 }
 
 func (s *Service) serverViewLocked(server *store.Server) (*ServerView, error) {
@@ -201,7 +270,7 @@ func (s *Service) serverViewLocked(server *store.Server) (*ServerView, error) {
 		Redirect: server.Redirect, Fallbacks: server.FallbackEndpoints, DeviceBinding: server.DeviceBinding,
 		MachineID: server.MachineID, ClientToClient: server.ClientToClient, Reachable: server.ReachableServers,
 		Routed: server.Routed, Inbound: server.Inbound, Routes: routeViews(s.routesOf(server)),
-		CreatedAt: server.CreatedAt, UpdatedAt: server.UpdatedAt,
+		CreatedAt: server.CreatedAt, UpdatedAt: server.UpdatedAt, Version: server.Version, UpdatedBy: server.UpdatedBy,
 	}
 	if key, err := wgtypes.ParseKey(server.PrivateKey); err == nil {
 		view.PublicKey = key.PublicKey().String()
@@ -284,6 +353,10 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 	if err != nil {
 		return nil, err
 	}
+	latest, err := q.LatestConnections()
+	if err != nil {
+		return nil, err
+	}
 	now := s.now()
 	views := make([]PeerView, 0, len(peers))
 	for _, peer := range peers {
@@ -291,9 +364,9 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 		view := PeerView{
 			ID: peer.ID, ServerID: peer.ServerID, Name: peer.Name, Enabled: peer.Enabled, UserID: peer.UserID,
 			Username: names[peer.UserID], Address: peer.Address, PublicKey: peer.PublicKey, RouteAll: peer.RouteAll,
-			Blocked: peer.Blocked, Alerts: alerts[peer.ID],
+			Access: append([]string{}, peer.Access...), Blocked: peer.Blocked, Alerts: alerts[peer.ID],
 			Connected: s.connectedLocked(stats), Received: stats.Received, Sent: stats.Sent,
-			CreatedAt: peer.CreatedAt, UpdatedAt: peer.UpdatedAt,
+			CreatedAt: peer.CreatedAt, UpdatedAt: peer.UpdatedAt, Version: peer.Version, UpdatedBy: peer.UpdatedBy,
 		}
 		if server, ok := byID[peer.ServerID]; ok {
 			view.Address6 = peerAddress6(server, peer.Address)
@@ -303,6 +376,10 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 		}
 		if stats.Endpoint.IsValid() {
 			view.Endpoint = stats.Endpoint.String()
+		}
+		// WireGuard forgets the handshakes when the container starts again: the history doesn't
+		if c, ok := latest[peer.ID]; ok && view.LastHandshake == 0 && c.ServerID == peer.ServerID && c.StartedAt >= peer.CreatedAt {
+			view.LastSeen, view.LastEndpoint = c.LastSeen, c.Endpoint
 		}
 		if session, ok := byPeer[peer.ID]; ok {
 			view.Session = sessionView(session)
@@ -366,6 +443,7 @@ func (s *Service) userViewsLocked(users []store.User) ([]UserView, error) {
 		view := UserView{
 			ID: user.ID, Username: user.Username, FullName: user.FullName, Disabled: user.Disabled,
 			TOTP: user.TOTPSecret != "", Peers: []string{}, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
+			Version: user.Version, UpdatedBy: user.UpdatedBy,
 		}
 		for _, peer := range peers {
 			if peer.UserID == user.ID {

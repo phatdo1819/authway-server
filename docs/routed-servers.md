@@ -12,7 +12,8 @@ can't start a connection to one. A routed server keeps the address of each peer,
   the networks doesn't have to translate the tunnels.
 - **The networks start connections to the peers**: an option of a routed server. From its networks only, to its peers
   logged in only when it has a login, and only while the option is on: turning it off cuts the connections already
-  open. The firewall of each device still decides what it accepts. Without it, the networks only answer the peers.
+  open. A peer with access rules gets connections only from its own networks. The firewall of each device still
+  decides what it accepts. Without it, the networks only answer the peers.
 - **Two ways to run it**: through the Docker host, the simpler one, or with an address of its own for the container.
   The **?** next to the setting in the web UI explains NAT and routed with a drawing.
 

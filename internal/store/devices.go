@@ -127,3 +127,19 @@ func (t *Tx) PruneConnections(before int64) error {
 	_, err := t.q.Exec("DELETE FROM connections WHERE ended_at != 0 AND ended_at < ?", before)
 	return err
 }
+
+// LatestConnections returns the latest connection of each peer in the history, by the id of the peer. A deleted peer
+// may have left the id to a new one: its rows started before the new peer was made.
+func (t *Tx) LatestConnections() (map[int64]Connection, error) {
+	list, err := t.queryConnections(`WHERE id IN (SELECT (SELECT id FROM connections AS latest
+		WHERE latest.peer_id = peers.peer_id ORDER BY last_seen DESC, id DESC LIMIT 1)
+		FROM (SELECT DISTINCT peer_id FROM connections) AS peers)`)
+	if err != nil {
+		return nil, err
+	}
+	latest := make(map[int64]Connection, len(list))
+	for _, c := range list {
+		latest[c.PeerID] = c
+	}
+	return latest, nil
+}

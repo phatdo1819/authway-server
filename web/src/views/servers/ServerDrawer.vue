@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { api, ApiError, type AuthMode, type Server, type ServerInput, type ServerSuggestion } from '../../api'
 import AppIcon from '../../components/AppIcon.vue'
+import ConflictNotice from '../../components/ConflictNotice.vue'
 import UiButton from '../../components/UiButton.vue'
 import UiDrawer from '../../components/UiDrawer.vue'
 import UiInput from '../../components/UiInput.vue'
@@ -10,6 +11,7 @@ import UiListInput from '../../components/UiListInput.vue'
 import UiNotice from '../../components/UiNotice.vue'
 import UiSelect from '../../components/UiSelect.vue'
 import UiToggle from '../../components/UiToggle.vue'
+import { useEditGuard } from '../../conflict'
 import { authModes, duration, errorMessage, fieldMessage, lockModes, routingModes } from '../../format'
 import { notify } from '../../state'
 import RoutingHelpModal from './RoutingHelpModal.vue'
@@ -125,6 +127,70 @@ function toggleReach(id: number, on: boolean) {
 const lockOptions = lockModes.map((mode) => ({ value: mode.value, label: mode.label }))
 const lockHelp = computed(() => lockModes.find((mode) => mode.value === form.value.lock_endpoint)?.description ?? '')
 
+// the fields of the form from a server, the servers it reaches in order: their order doesn't matter
+function formOf(s: Server): ServerInput {
+  return {
+    name: s.name,
+    enabled: s.enabled,
+    public_host: s.public_host,
+    listen_port: s.listen_port,
+    public_port: s.public_port,
+    network: s.network,
+    network6: s.network6,
+    networks: [...s.networks],
+    dns: [...s.dns],
+    mtu: s.mtu,
+    keepalive: s.keepalive,
+    auth_mode: s.auth_mode,
+    session_timeout: s.session_timeout,
+    lock_endpoint: s.lock_endpoint,
+    detect_copies: s.detect_copies,
+    block_copies: s.block_copies,
+    redirect: s.redirect,
+    fallback_endpoints: [...s.fallback_endpoints],
+    device_binding: s.device_binding,
+    machine_id: s.machine_id,
+    client_to_client: s.client_to_client,
+    reachable_servers: [...s.reachable_servers].sort((a, b) => a - b),
+    routed: s.routed,
+    inbound: s.inbound,
+  }
+}
+
+// another administrator saving this server meanwhile
+const guard = useEditGuard(formOf, {
+  name: 'Name',
+  enabled: 'Enabled',
+  public_host: 'Public address',
+  listen_port: 'UDP port',
+  public_port: 'Public port',
+  network: 'Tunnel network',
+  network6: 'IPv6 tunnel network',
+  networks: 'Networks the peers reach',
+  dns: 'DNS servers of the peers',
+  mtu: 'MTU',
+  keepalive: 'Keepalive of the peers',
+  auth_mode: 'Login',
+  session_timeout: 'Session length',
+  lock_endpoint: 'Lock to the public IP of the login',
+  detect_copies: 'Detect two devices',
+  block_copies: 'Block the peer',
+  redirect: 'Lead to the login page',
+  fallback_endpoints: 'Fallback addresses',
+  device_binding: 'Device binding',
+  machine_id: 'Check the computer too',
+  client_to_client: 'The peers reach each other',
+  reachable_servers: 'Servers the peers reach',
+  routed: 'NAT or routed',
+  inbound: 'The networks start connections to the peers',
+  version: 'Version',
+})
+const conflict = guard.conflict
+
+function useTheirs() {
+  Object.assign(form.value, guard.useTheirs())
+}
+
 function blank(): ServerInput {
   return {
     name: '',
@@ -164,34 +230,9 @@ watch(
     error.value = ''
     advanced.value = false
     ipv6Off.value = ''
+    guard.start(props.server)
     if (props.server) {
-      const s = props.server
-      form.value = {
-        name: s.name,
-        enabled: s.enabled,
-        public_host: s.public_host,
-        listen_port: s.listen_port,
-        public_port: s.public_port,
-        network: s.network,
-        network6: s.network6,
-        networks: [...s.networks],
-        dns: [...s.dns],
-        mtu: s.mtu,
-        keepalive: s.keepalive,
-        auth_mode: s.auth_mode,
-        session_timeout: s.session_timeout,
-        lock_endpoint: s.lock_endpoint,
-        detect_copies: s.detect_copies,
-        block_copies: s.block_copies,
-        redirect: s.redirect,
-        fallback_endpoints: [...s.fallback_endpoints],
-        device_binding: s.device_binding,
-        machine_id: s.machine_id,
-        client_to_client: s.client_to_client,
-        reachable_servers: [...s.reachable_servers],
-        routed: s.routed,
-        inbound: s.inbound,
-      }
+      form.value = formOf(props.server)
       return
     }
     form.value = blank()
@@ -215,6 +256,7 @@ async function save() {
   busy.value = true
   errors.value = {}
   error.value = ''
+  let again = false
   const input: ServerInput = {
     ...form.value,
     listen_port: number(form.value.listen_port),
@@ -229,14 +271,24 @@ async function save() {
     device_binding: gated.value && form.value.device_binding,
     machine_id: gated.value && form.value.device_binding && form.value.machine_id,
     // the servers deleted meanwhile
-    reachable_servers: form.value.reachable_servers.filter((id) => others.value.some((server) => server.id === id)),
+    reachable_servers: form.value.reachable_servers
+      .filter((id) => others.value.some((server) => server.id === id))
+      .sort((a, b) => a - b),
     inbound: form.value.routed && form.value.inbound,
   }
   try {
-    const server = props.server ? await api.updateServer(props.server.id, input) : await api.createServer(input)
+    const server = props.server
+      ? await api.updateServer(props.server.id, { ...input, version: guard.version.value })
+      : await api.createServer(input)
     notify(props.server ? `${server.name} saved.` : `${server.name} added.`)
     emit('saved', server)
   } catch (e) {
+    const merged = guard.refused(e, input)
+    if (merged) {
+      form.value = merged.values
+      again = merged.again
+      return
+    }
     if (e instanceof ApiError && e.code === 'validation') {
       errors.value = e.fields
       if (['public_port', 'mtu', 'keepalive'].some((field) => field in e.fields)) {
@@ -246,6 +298,10 @@ async function save() {
     error.value = errorMessage(e)
   } finally {
     busy.value = false
+    // only what the form doesn't show changed meanwhile: saved again with the new version
+    if (again) {
+      save()
+    }
   }
 }
 
@@ -257,6 +313,7 @@ function setMode(mode: AuthMode) {
 <template>
   <UiDrawer :open="open" :title="server ? `Edit ${server.name}` : 'Add server'" @close="emit('close')">
     <form id="server-form" class="space-y-8" novalidate @submit.prevent="save">
+      <ConflictNotice :conflict="conflict" noun="server" @theirs="useTheirs" />
       <section class="space-y-5">
         <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" helper="Letters, digits, spaces, dots, dashes; up to 32. It names the configuration files." />
         <UiToggle v-model="form.enabled" label="Enabled" description="A disabled server keeps its peers, but nobody connects." />

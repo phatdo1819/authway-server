@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   api,
@@ -20,7 +21,16 @@ import UiNotice from '../components/UiNotice.vue'
 import { dateTime, errorMessage, formatBytes, formatPercent, formatRate, uptime } from '../format'
 
 // The System page: the checks of what goes wrong most, the resources of the host and of Authway Server, their
-// history, the network interfaces, the disks and the latest lines of the log. Read again every 5 seconds.
+// history, the network interfaces, the disks and the latest lines of the log, in tabs. The snapshot is read again
+// every 5 seconds; the history and the log only while their tab is open.
+type Tab = 'overview' | 'history' | 'network' | 'host' | 'log'
+const tabs: { id: Tab; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'history', label: 'History' },
+  { id: 'network', label: 'Network' },
+  { id: 'host', label: 'Host' },
+  { id: 'log', label: 'Log' },
+]
 const ranges = [
   { seconds: 900, label: '15 min' },
   { seconds: 3600, label: '1 hour' },
@@ -33,6 +43,11 @@ const skewLimit = 30
 const card = 'rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900'
 const th = 'px-4 py-2.5 font-semibold whitespace-nowrap'
 
+const route = useRoute()
+const router = useRouter()
+// the tab open, in the address: a link or a reload keeps it
+const tab = ref<Tab>(tabs.some((entry) => entry.id === route.query.tab) ? (route.query.tab as Tab) : 'overview')
+const tabButtons = ref<HTMLButtonElement[]>([])
 const range = ref(3600)
 const snapshot = ref<SystemSnapshot | null>(null)
 const points = ref<SystemPoint[]>([])
@@ -100,14 +115,48 @@ function tick() {
   }
   ticks++
   loadSnapshot()
-  // the points of a minute come every minute
-  if (range.value <= 3600 || ticks % 12 === 0) {
+  // the points of a minute come every minute; a tab opened again gets the ones it missed
+  if (tab.value === 'history' && (range.value <= 3600 || ticks % 12 === 0)) {
     loadHistory(false)
   }
-  if (ticks % 3 === 0) {
+  if (tab.value === 'log' && ticks % 3 === 0) {
     loadLog()
   }
 }
+
+watch(tab, (now) => {
+  router.replace({ query: { ...route.query, tab: now === 'overview' ? undefined : now } })
+  if (now === 'history') {
+    loadHistory(false)
+  } else if (now === 'log') {
+    loadLog()
+  }
+})
+
+// the arrows, Home and End move between the tabs, as in the tabs of the systems
+function onTabKey(event: KeyboardEvent, index: number) {
+  const moves: Record<string, number> = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }
+  if (!(event.key in moves)) {
+    return
+  }
+  event.preventDefault()
+  const next = (moves[event.key] + tabs.length) % tabs.length
+  tab.value = tabs[next].id
+  nextTick(() => tabButtons.value[next]?.focus())
+}
+
+// a dot on a tab with something wrong in it
+const tabAlert = computed<Partial<Record<Tab, 'red' | 'amber'>>>(() => {
+  const alerts: Partial<Record<Tab, 'red' | 'amber'>> = {}
+  if (problems.value.errors || problems.value.warnings) {
+    alerts.overview = problems.value.errors ? 'red' : 'amber'
+  }
+  const logCheck = checks.value.find((check) => check.id === 'log')
+  if (logCheck && (logCheck.status === 'error' || logCheck.status === 'warning')) {
+    alerts.log = logCheck.status === 'error' ? 'red' : 'amber'
+  }
+  return alerts
+})
 
 onMounted(async () => {
   loadSnapshot()
@@ -301,89 +350,130 @@ const certificateText = computed(() => {
       This server doesn't run on Linux: the resources, the interfaces and the disks are invented, to try the page.
     </UiNotice>
 
-    <!-- the checks -->
-    <section :class="[card, 'mt-6']" aria-labelledby="checks-title">
-      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3.5 dark:border-slate-800">
-        <h2 id="checks-title" class="font-semibold">Checks</h2>
-        <template v-if="snapshot">
-          <UiBadge v-if="problems.errors" tone="red" dot>
-            {{ problems.errors === 1 ? '1 error' : `${problems.errors} errors` }}{{
-              problems.warnings ? `, ${problems.warnings === 1 ? '1 warning' : `${problems.warnings} warnings`}` : ''
-            }}
-          </UiBadge>
-          <UiBadge v-else-if="problems.warnings" tone="amber" dot>
-            {{ problems.warnings === 1 ? '1 warning' : `${problems.warnings} warnings` }}
-          </UiBadge>
-          <UiBadge v-else tone="green" dot>All good</UiBadge>
-        </template>
+    <div class="mt-6 border-b border-slate-200 dark:border-slate-800">
+      <div class="-mb-px flex gap-6 overflow-x-auto" role="tablist" aria-label="System">
+        <button
+          v-for="(entry, index) in tabs"
+          :id="`system-tab-${entry.id}`"
+          :key="entry.id"
+          ref="tabButtons"
+          type="button"
+          role="tab"
+          :aria-selected="tab === entry.id"
+          :aria-controls="`system-panel-${entry.id}`"
+          :tabindex="tab === entry.id ? 0 : -1"
+          class="flex items-center gap-2 border-b-2 px-1 pb-3 text-sm font-medium whitespace-nowrap"
+          :class="
+            tab === entry.id
+              ? 'border-sky-700 text-sky-800 dark:border-sky-400 dark:text-sky-300'
+              : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+          "
+          @click="tab = entry.id"
+          @keydown="onTabKey($event, index)"
+        >
+          {{ entry.label }}
+          <span
+            v-if="tabAlert[entry.id]"
+            class="h-2 w-2 rounded-full"
+            :class="tabAlert[entry.id] === 'red' ? 'bg-rose-500' : 'bg-amber-500'"
+            :title="tabAlert[entry.id] === 'red' ? 'An error' : 'A warning'"
+          />
+        </button>
       </div>
-      <ul v-if="snapshot" class="divide-y divide-slate-100 dark:divide-slate-800">
-        <li v-for="check in checks" :key="check.id" class="flex gap-3 px-5 py-3">
-          <span :class="['mt-0.5 shrink-0', checkLook[check.status].color]">
-            <AppIcon :name="checkLook[check.status].icon" />
-          </span>
-          <div class="min-w-0 text-sm">
-            <p class="font-medium text-slate-900 dark:text-slate-100">
-              <span class="sr-only">{{ checkLook[check.status].label }}: </span>{{ check.title }}
-            </p>
-            <p v-if="check.detail" class="mt-0.5 break-words text-slate-600 dark:text-slate-400">{{ check.detail }}</p>
-            <p v-if="check.id === 'clock' && Math.abs(skew) <= skewLimit" class="mt-0.5 text-slate-600 dark:text-slate-400">
-              {{ skewText }}
-            </p>
-            <a
-              v-if="check.id === 'log' && check.status !== 'ok'"
-              href="#log-title"
-              class="mt-1 inline-block font-medium text-sky-700 hover:underline dark:text-sky-400"
-            >
-              See the log
-            </a>
-          </div>
-        </li>
-      </ul>
-      <p v-else class="px-5 py-6 text-sm text-slate-500">Reading…</p>
-    </section>
+    </div>
 
-    <!-- the tiles -->
-    <div v-if="host && own" class="mt-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-      <div :class="[card, 'p-4']">
-        <p class="text-sm text-slate-500 dark:text-slate-400">Processors</p>
-        <p class="mt-1 text-2xl font-semibold">{{ formatPercent(host.cpu) }}</p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {{ host.processors === 1 ? '1 processor' : `${host.processors} processors` }} · load {{ host.load[0].toFixed(2) }}
-        </p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ formatPercent(own.cpu) }}</p>
-      </div>
-      <div :class="[card, 'p-4']">
-        <p class="text-sm text-slate-500 dark:text-slate-400">Memory</p>
-        <p class="mt-1 text-2xl font-semibold">{{ formatPercent(share(memoryUsed, host.memory_total)) }}</p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(memoryUsed) }} of {{ formatBytes(host.memory_total) }} in use</p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ formatBytes(own.memory) }}</p>
-      </div>
-      <div v-if="dataDisk" :class="[card, 'p-4']">
-        <p class="text-sm text-slate-500 dark:text-slate-400">Disk of the data</p>
-        <p class="mt-1 text-2xl font-semibold">{{ formatPercent(diskShare(dataDisk)) }}</p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(dataDisk.used) }} of {{ formatBytes(dataDisk.total) }} in use</p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(dataDisk.available) }} available</p>
-      </div>
-      <div v-if="uplink" :class="[card, 'p-4']">
-        <p class="text-sm text-slate-500 dark:text-slate-400">Network, {{ uplink.name }}</p>
-        <p class="mt-1 text-2xl font-semibold">{{ formatRate(uplink.received + uplink.sent) }}</p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatRate(uplink.received) }} received</p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">{{ formatRate(uplink.sent) }} sent</p>
-      </div>
-      <div :class="[card, 'p-4']">
-        <p class="text-sm text-slate-500 dark:text-slate-400">Up for</p>
-        <p class="mt-1 text-2xl font-semibold">{{ uptime(host.uptime) }}</p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">the host</p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ uptime((snapshot?.at ?? 0) - own.started) }}</p>
+    <div v-if="tab === 'overview'" id="system-panel-overview" role="tabpanel" aria-labelledby="system-tab-overview">
+      <!-- the checks -->
+      <section :class="[card, 'mt-6']" aria-labelledby="checks-title">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3.5 dark:border-slate-800">
+          <h2 id="checks-title" class="font-semibold">Checks</h2>
+          <template v-if="snapshot">
+            <UiBadge v-if="problems.errors" tone="red" dot>
+              {{ problems.errors === 1 ? '1 error' : `${problems.errors} errors` }}{{
+                problems.warnings ? `, ${problems.warnings === 1 ? '1 warning' : `${problems.warnings} warnings`}` : ''
+              }}
+            </UiBadge>
+            <UiBadge v-else-if="problems.warnings" tone="amber" dot>
+              {{ problems.warnings === 1 ? '1 warning' : `${problems.warnings} warnings` }}
+            </UiBadge>
+            <UiBadge v-else tone="green" dot>All good</UiBadge>
+          </template>
+        </div>
+        <ul v-if="snapshot" class="divide-y divide-slate-100 dark:divide-slate-800">
+          <li v-for="check in checks" :key="check.id" class="flex gap-3 px-5 py-3">
+            <span :class="['mt-0.5 shrink-0', checkLook[check.status].color]">
+              <AppIcon :name="checkLook[check.status].icon" />
+            </span>
+            <div class="min-w-0 text-sm">
+              <p class="font-medium text-slate-900 dark:text-slate-100">
+                <span class="sr-only">{{ checkLook[check.status].label }}: </span>{{ check.title }}
+              </p>
+              <p v-if="check.detail" class="mt-0.5 break-words text-slate-600 dark:text-slate-400">{{ check.detail }}</p>
+              <p v-if="check.id === 'clock' && Math.abs(skew) <= skewLimit" class="mt-0.5 text-slate-600 dark:text-slate-400">
+                {{ skewText }}
+              </p>
+              <button
+                v-if="check.id === 'log' && check.status !== 'ok'"
+                type="button"
+                class="mt-1 inline-block font-medium text-sky-700 hover:underline dark:text-sky-400"
+                @click="tab = 'log'"
+              >
+                See the log
+              </button>
+            </div>
+          </li>
+        </ul>
+        <p v-else class="px-5 py-6 text-sm text-slate-500">Reading…</p>
+      </section>
+
+      <!-- the tiles -->
+      <div v-if="host && own" class="mt-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+        <div :class="[card, 'p-4']">
+          <p class="text-sm text-slate-500 dark:text-slate-400">Processors</p>
+          <p class="mt-1 text-2xl font-semibold">{{ formatPercent(host.cpu) }}</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            {{ host.processors === 1 ? '1 processor' : `${host.processors} processors` }} · load {{ host.load[0].toFixed(2) }}
+          </p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ formatPercent(own.cpu) }}</p>
+        </div>
+        <div :class="[card, 'p-4']">
+          <p class="text-sm text-slate-500 dark:text-slate-400">Memory</p>
+          <p class="mt-1 text-2xl font-semibold">{{ formatPercent(share(memoryUsed, host.memory_total)) }}</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(memoryUsed) }} of {{ formatBytes(host.memory_total) }} in use</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ formatBytes(own.memory) }}</p>
+        </div>
+        <div v-if="dataDisk" :class="[card, 'p-4']">
+          <p class="text-sm text-slate-500 dark:text-slate-400">Disk of the data</p>
+          <p class="mt-1 text-2xl font-semibold">{{ formatPercent(diskShare(dataDisk)) }}</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(dataDisk.used) }} of {{ formatBytes(dataDisk.total) }} in use</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">{{ formatBytes(dataDisk.available) }} available</p>
+        </div>
+        <div v-if="uplink" :class="[card, 'p-4']">
+          <p class="text-sm text-slate-500 dark:text-slate-400">Network, {{ uplink.name }}</p>
+          <p class="mt-1 text-2xl font-semibold">{{ formatRate(uplink.received + uplink.sent) }}</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ formatRate(uplink.received) }} received</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">{{ formatRate(uplink.sent) }} sent</p>
+        </div>
+        <div :class="[card, 'p-4']">
+          <p class="text-sm text-slate-500 dark:text-slate-400">Up for</p>
+          <p class="mt-1 text-2xl font-semibold">{{ uptime(host.uptime) }}</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">the host</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Authway Server {{ uptime((snapshot?.at ?? 0) - own.started) }}</p>
+        </div>
       </div>
     </div>
 
     <!-- the history -->
-    <section class="mt-8" aria-labelledby="history-title">
+    <section
+      v-else-if="tab === 'history'"
+      id="system-panel-history"
+      class="mt-6"
+      role="tabpanel"
+      aria-labelledby="system-tab-history"
+    >
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 id="history-title" class="font-semibold">History</h2>
+          <h2 class="font-semibold">History</h2>
           <p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             Kept in memory: it starts again when Authway Server restarts. Past an hour, the points are averages of a minute.
           </p>
@@ -463,12 +553,19 @@ const certificateText = computed(() => {
     </section>
 
     <!-- the interfaces -->
-    <section v-if="snapshot" class="mt-8" aria-labelledby="interfaces-title">
-      <h2 id="interfaces-title" class="font-semibold">Network interfaces</h2>
+    <section
+      v-else-if="tab === 'network'"
+      id="system-panel-network"
+      class="mt-6"
+      role="tabpanel"
+      aria-labelledby="system-tab-network"
+    >
+      <h2 class="font-semibold">Network interfaces</h2>
       <p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
         The rates of the latest 5 seconds, and the totals since the interface was made.
       </p>
-      <div :class="[card, 'mt-4 overflow-x-auto']">
+      <p v-if="!snapshot" class="mt-4 text-sm text-slate-500">Reading…</p>
+      <div v-else :class="[card, 'mt-4 overflow-x-auto']">
         <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
           <thead class="bg-slate-50 text-left text-xs font-semibold tracking-wide text-slate-500 uppercase dark:bg-slate-800/50 dark:text-slate-400">
             <tr>
@@ -517,91 +614,106 @@ const certificateText = computed(() => {
     </section>
 
     <!-- the disks, the host, Authway Server -->
-    <div v-if="snapshot && host && own" class="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
-      <section :class="[card, 'p-5']" aria-labelledby="disks-title">
-        <h2 id="disks-title" class="font-semibold">Disks</h2>
-        <div v-for="disk in snapshot.disks" :key="disk.name" class="mt-4">
-          <div class="flex items-baseline justify-between gap-3 text-sm">
-            <p class="font-medium">
-              {{ disk.name === 'data' ? 'Data folder' : 'System of the container' }}
-              <span class="ml-1 font-mono text-xs font-normal text-slate-500">{{ disk.path }}</span>
+    <div
+      v-else-if="tab === 'host'"
+      id="system-panel-host"
+      class="mt-6"
+      role="tabpanel"
+      aria-labelledby="system-tab-host"
+    >
+      <p v-if="!(snapshot && host && own)" class="text-sm text-slate-500">Reading…</p>
+      <div v-else class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <section :class="[card, 'p-5']" aria-labelledby="disks-title">
+          <h2 id="disks-title" class="font-semibold">Disks</h2>
+          <div v-for="disk in snapshot.disks" :key="disk.name" class="mt-4">
+            <div class="flex items-baseline justify-between gap-3 text-sm">
+              <p class="font-medium">
+                {{ disk.name === 'data' ? 'Data folder' : 'System of the container' }}
+                <span class="ml-1 font-mono text-xs font-normal text-slate-500">{{ disk.path }}</span>
+              </p>
+              <p class="tabular-nums">{{ formatPercent(diskShare(disk)) }}</p>
+            </div>
+            <div
+              class="mt-2 h-2 overflow-hidden rounded-full bg-sky-100 dark:bg-sky-950"
+              role="meter"
+              :aria-valuenow="Math.round(diskShare(disk))"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-label="`${disk.name === 'data' ? 'Data folder' : 'System of the container'} in use`"
+            >
+              <div class="h-full rounded-full" :class="meterColor(diskShare(disk))" :style="{ width: `${Math.min(100, diskShare(disk))}%` }" />
+            </div>
+            <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+              {{ formatBytes(disk.used) }} of {{ formatBytes(disk.total) }} in use, {{ formatBytes(disk.available) }} available.
+              <template v-if="disk.inodes">{{ count(disk.inodes_free) }} more files can be created.</template>
             </p>
-            <p class="tabular-nums">{{ formatPercent(diskShare(disk)) }}</p>
           </div>
-          <div
-            class="mt-2 h-2 overflow-hidden rounded-full bg-sky-100 dark:bg-sky-950"
-            role="meter"
-            :aria-valuenow="Math.round(diskShare(disk))"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :aria-label="`${disk.name === 'data' ? 'Data folder' : 'System of the container'} in use`"
-          >
-            <div class="h-full rounded-full" :class="meterColor(diskShare(disk))" :style="{ width: `${Math.min(100, diskShare(disk))}%` }" />
-          </div>
-          <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-            {{ formatBytes(disk.used) }} of {{ formatBytes(disk.total) }} in use, {{ formatBytes(disk.available) }} available.
-            <template v-if="disk.inodes">{{ count(disk.inodes_free) }} more files can be created.</template>
-          </p>
-        </div>
-        <p v-if="!snapshot.disks.length" class="mt-3 text-sm text-slate-500">Can't read the disks.</p>
-        <dl class="mt-5 space-y-1.5 border-t border-slate-100 pt-4 text-sm dark:border-slate-800">
-          <div class="flex justify-between gap-3">
-            <dt class="text-slate-500 dark:text-slate-400">Database</dt>
-            <dd class="tabular-nums">{{ formatBytes(snapshot.database.size) }}</dd>
-          </div>
-          <div class="flex justify-between gap-3">
-            <dt class="text-slate-500 dark:text-slate-400">Changes not yet in it (WAL)</dt>
-            <dd class="tabular-nums">{{ formatBytes(snapshot.database.log) }}</dd>
-          </div>
-        </dl>
-      </section>
+          <p v-if="!snapshot.disks.length" class="mt-3 text-sm text-slate-500">Can't read the disks.</p>
+          <dl class="mt-5 space-y-1.5 border-t border-slate-100 pt-4 text-sm dark:border-slate-800">
+            <div class="flex justify-between gap-3">
+              <dt class="text-slate-500 dark:text-slate-400">Database</dt>
+              <dd class="tabular-nums">{{ formatBytes(snapshot.database.size) }}</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-slate-500 dark:text-slate-400">Changes not yet in it (WAL)</dt>
+              <dd class="tabular-nums">{{ formatBytes(snapshot.database.log) }}</dd>
+            </div>
+          </dl>
+        </section>
 
-      <section :class="[card, 'p-5']" aria-labelledby="host-title">
-        <h2 id="host-title" class="font-semibold">Host</h2>
-        <dl class="mt-3 space-y-1.5 text-sm">
-          <div v-for="row in [
-            ['Name', host.hostname || '—'],
-            ['Kernel', host.kernel || '—'],
-            ['System', (host.os || '—') + (host.container ? ', in a container' : '')],
-            ['Time zone', host.timezone],
-            ['Load', `${host.load.map((value) => value.toFixed(2)).join(' · ')} (1, 5, 15 min)`],
-            ['Waiting for the disks', formatPercent(host.iowait)],
-            ['Swap', host.swap_total ? `${formatBytes(host.swap_total - host.swap_free)} of ${formatBytes(host.swap_total)} in use` : 'None'],
-            ['IP forwarding', snapshot.ip_forward === null ? 'Unknown' : snapshot.ip_forward ? 'On' : 'Off'],
-            ['IPv6', ipv6Text],
-            ['Connection tracking', snapshot.conntrack.max ? `${count(snapshot.conntrack.count)} of ${count(snapshot.conntrack.max)}` : 'Unknown'],
-          ]" :key="row[0]" class="flex justify-between gap-3">
-            <dt class="shrink-0 text-slate-500 dark:text-slate-400">{{ row[0] }}</dt>
-            <dd class="min-w-0 text-right break-words">{{ row[1] }}</dd>
-          </div>
-        </dl>
-      </section>
+        <section :class="[card, 'p-5']" aria-labelledby="host-title">
+          <h2 id="host-title" class="font-semibold">Host</h2>
+          <dl class="mt-3 space-y-1.5 text-sm">
+            <div v-for="row in [
+              ['Name', host.hostname || '—'],
+              ['Kernel', host.kernel || '—'],
+              ['System', (host.os || '—') + (host.container ? ', in a container' : '')],
+              ['Time zone', host.timezone],
+              ['Load', `${host.load.map((value) => value.toFixed(2)).join(' · ')} (1, 5, 15 min)`],
+              ['Waiting for the disks', formatPercent(host.iowait)],
+              ['Swap', host.swap_total ? `${formatBytes(host.swap_total - host.swap_free)} of ${formatBytes(host.swap_total)} in use` : 'None'],
+              ['IP forwarding', snapshot.ip_forward === null ? 'Unknown' : snapshot.ip_forward ? 'On' : 'Off'],
+              ['IPv6', ipv6Text],
+              ['Connection tracking', snapshot.conntrack.max ? `${count(snapshot.conntrack.count)} of ${count(snapshot.conntrack.max)}` : 'Unknown'],
+            ]" :key="row[0]" class="flex justify-between gap-3">
+              <dt class="shrink-0 text-slate-500 dark:text-slate-400">{{ row[0] }}</dt>
+              <dd class="min-w-0 text-right break-words">{{ row[1] }}</dd>
+            </div>
+          </dl>
+        </section>
 
-      <section :class="[card, 'p-5']" aria-labelledby="own-title">
-        <h2 id="own-title" class="font-semibold">Authway Server</h2>
-        <dl class="mt-3 space-y-1.5 text-sm">
-          <div v-for="row in [
-            ['Version', own.version],
-            ['Started', dateTime(own.started)],
-            ['Processors', formatPercent(own.cpu)],
-            ['Memory', own.memory_limit ? `${formatBytes(own.memory)} of ${formatBytes(own.memory_limit)}` : `${formatBytes(own.memory)}, no limit`],
-            ['Memory of Go', formatBytes(own.heap)],
-            ['Goroutines', count(own.goroutines)],
-            ['Open files', own.max_files ? `${count(own.open_files)} of ${count(own.max_files)}` : count(own.open_files)],
-            ['Built with', `${own.go_version}, ${own.platform}`],
-            ['Certificate', certificateText],
-          ]" :key="row[0]" class="flex justify-between gap-3">
-            <dt class="shrink-0 text-slate-500 dark:text-slate-400">{{ row[0] }}</dt>
-            <dd class="min-w-0 text-right break-words">{{ row[1] }}</dd>
-          </div>
-        </dl>
-      </section>
+        <section :class="[card, 'p-5']" aria-labelledby="own-title">
+          <h2 id="own-title" class="font-semibold">Authway Server</h2>
+          <dl class="mt-3 space-y-1.5 text-sm">
+            <div v-for="row in [
+              ['Version', own.version],
+              ['Started', dateTime(own.started)],
+              ['Processors', formatPercent(own.cpu)],
+              ['Memory', own.memory_limit ? `${formatBytes(own.memory)} of ${formatBytes(own.memory_limit)}` : `${formatBytes(own.memory)}, no limit`],
+              ['Memory of Go', formatBytes(own.heap)],
+              ['Goroutines', count(own.goroutines)],
+              ['Open files', own.max_files ? `${count(own.open_files)} of ${count(own.max_files)}` : count(own.open_files)],
+              ['Built with', `${own.go_version}, ${own.platform}`],
+              ['Certificate', certificateText],
+            ]" :key="row[0]" class="flex justify-between gap-3">
+              <dt class="shrink-0 text-slate-500 dark:text-slate-400">{{ row[0] }}</dt>
+              <dd class="min-w-0 text-right break-words">{{ row[1] }}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
     </div>
 
     <!-- the log -->
-    <section :class="[card, 'mt-8']" aria-labelledby="log-title">
+    <section
+      v-else-if="tab === 'log'"
+      id="system-panel-log"
+      :class="[card, 'mt-6']"
+      role="tabpanel"
+      aria-labelledby="system-tab-log"
+    >
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5 dark:border-slate-800">
-        <h2 id="log-title" class="scroll-mt-6 font-semibold">Recent log</h2>
+        <h2 class="font-semibold">Recent log</h2>
         <div class="flex items-center gap-2">
           <div class="inline-flex rounded-md border border-slate-300 bg-white p-0.5 dark:border-slate-600 dark:bg-slate-800" role="group" aria-label="Lines">
             <button

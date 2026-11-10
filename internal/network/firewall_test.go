@@ -316,3 +316,89 @@ func TestRulesetIPv6(t *testing.T) {
 		t.Error(got)
 	}
 }
+
+// A peer with access rules reaches its own networks, the DNS servers of its server, and with RouteAll the internet:
+// nothing else of the networks of the server nor of the private networks. On a routed server with Inbound, only its
+// own networks start connections to it. The other peers keep the rules of their server.
+func TestAccessRules(t *testing.T) {
+	state := State{
+		LoginPort: 8181,
+		Servers: []Server{{
+			Interface: "wg0", Routed: true, Inbound: true,
+			Address:  netip.MustParsePrefix("10.8.0.1/24"),
+			Address6: netip.MustParsePrefix("fd00:1::1/64"),
+			Networks: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("10.20.0.0/16"),
+				netip.MustParsePrefix("fd00:5::/64")},
+			DNS: []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("fd00:5::53")},
+			Peers: []Peer{
+				{Address: netip.MustParseAddr("10.8.0.2"), Address6: netip.MustParseAddr("fd00:1::2"),
+					Access: []netip.Prefix{netip.MustParsePrefix("192.168.1.10/32")}},
+				{Address: netip.MustParseAddr("10.8.0.3"), Address6: netip.MustParseAddr("fd00:1::3"), RouteAll: true,
+					Access: []netip.Prefix{netip.MustParsePrefix("192.168.1.20/32"), netip.MustParsePrefix("fd00:5::20/128")}},
+				{Address: netip.MustParseAddr("10.8.0.4"), Address6: netip.MustParseAddr("fd00:1::4")},
+			},
+		}},
+	}
+	rules := Ruleset(state)
+	section := func(start string) string {
+		at := strings.Index(rules, start)
+		if at < 0 {
+			t.Fatalf("no %q in:\n%s", start, rules)
+		}
+		return rules[at : at+strings.Index(rules[at:], "\n\t}")]
+	}
+	order := func(text string, lines ...string) {
+		t.Helper()
+		at := -1
+		for _, line := range lines {
+			index := strings.Index(text, line)
+			if index < 0 || index < at {
+				t.Fatalf("%q missing or out of order in:\n%s", line, text)
+			}
+			at = index
+		}
+	}
+	peers := section("chain wg0_forward {")
+	order(peers,
+		`oifname "wg*" drop`,
+		"ip saddr 10.8.0.2 ip daddr { 192.168.1.10/32 } accept",
+		"ip saddr 10.8.0.3 ip daddr { 192.168.1.20/32 } accept",
+		"ip saddr { 10.8.0.2, 10.8.0.3 } ip daddr { 192.168.1.1, 1.1.1.1 } meta l4proto { tcp, udp } th dport 53 accept",
+		"ip saddr { 10.8.0.2, 10.8.0.3 } ip daddr { 192.168.1.0/24, 10.20.0.0/16 } drop",
+		"ip saddr { 10.8.0.2, 10.8.0.3 } ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop",
+		"ip6 saddr fd00:1::3 ip6 daddr { fd00:5::20/128 } accept",
+		"ip6 saddr { fd00:1::2, fd00:1::3 } ip6 daddr { fd00:5::53 } meta l4proto { tcp, udp } th dport 53 accept",
+		"ip6 saddr { fd00:1::2, fd00:1::3 } ip6 daddr { fd00:5::/64 } drop",
+		"ip6 saddr { fd00:1::2, fd00:1::3 } ip6 daddr { fc00::/7, fe80::/10 } drop",
+		"ip saddr @wg0_route_all accept",
+		"ip daddr { 192.168.1.0/24, 10.20.0.0/16 } accept",
+		"ip6 daddr { fd00:5::/64 } accept\n\t\tdrop")
+	// the first peer has no IPv6 network of its own; the third has no rules
+	if strings.Contains(peers, "ip6 saddr fd00:1::2 ip6 daddr") || strings.Contains(rules, "10.8.0.4") ||
+		strings.Contains(rules, "fd00:1::4") {
+		t.Errorf("rules of a peer without them:\n%s", peers)
+	}
+	forward := section("chain forward {")
+	order(forward,
+		`iifname "wg0" jump wg0_forward`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip daddr 10.8.0.2 ip saddr { 192.168.1.10/32 } accept`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip daddr 10.8.0.3 ip saddr { 192.168.1.20/32 } accept`,
+		`oifname "wg0" ct direction original ip daddr { 10.8.0.2, 10.8.0.3 } drop`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip6 daddr fd00:1::3 ip6 saddr { fd00:5::20/128 } accept`,
+		`oifname "wg0" ct direction original ip6 daddr { fd00:1::2, fd00:1::3 } drop`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip saddr { 192.168.1.0/24, 10.20.0.0/16 } accept`,
+		`oifname "wg0" ct direction original drop`)
+	// NAT and routed alike: the translation doesn't depend on the rules of the peers
+	if !strings.Contains(rules, `ip saddr 10.8.0.0/24 oifname != "wg*" ip daddr != { 192.168.1.0/24, 10.20.0.0/16 } masquerade`) {
+		t.Errorf("translation:\n%s", rules)
+	}
+	if strings.Count(rules, "{") != strings.Count(rules, "}") {
+		t.Error("unbalanced braces")
+	}
+
+	// without peers with rules, nothing of them
+	state.Servers[0].Peers = state.Servers[0].Peers[2:]
+	if rules := Ruleset(state); strings.Contains(rules, "th dport 53") || strings.Contains(rules, "fc00::/7") {
+		t.Errorf("rules without peers with access rules:\n%s", rules)
+	}
+}

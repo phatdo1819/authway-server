@@ -169,6 +169,24 @@ func Ruleset(state State) string {
 	// answers to its own connections, those already open too: Inbound off cuts them at once
 	for _, server := range state.Servers {
 		if server.Inbound {
+			// a peer with access rules: only from its own networks
+			for _, family := range families(server) {
+				var limited []netip.Addr
+				for _, peer := range server.Peers {
+					address := family.address(peer)
+					if !peer.Limited() || !address.IsValid() {
+						continue
+					}
+					limited = append(limited, address)
+					if networks := prefixes(peer.Access, family.ipv6); networks != "" {
+						line(2, `iifname != "wg*" oifname %q ct direction original %s daddr %s %s saddr { %s } accept`,
+							server.Interface, family.name, address, family.name, networks)
+					}
+				}
+				if peers := addresses(limited, family.ipv6); peers != "" {
+					line(2, "oifname %q ct direction original %s daddr { %s } drop", server.Interface, family.name, peers)
+				}
+			}
 			if networks := prefixes(server.Networks, false); networks != "" {
 				line(2, `iifname != "wg*" oifname %q ct direction original ip saddr { %s } accept`, server.Interface, networks)
 			}
@@ -212,6 +230,7 @@ func Ruleset(state State) string {
 		}
 		// no other traffic between the peers, nor to the other tunnels
 		line(2, `oifname "wg*" drop`)
+		limitedRules(server, line)
 		line(2, "ip saddr @%s accept", routeAllSet(server.Interface))
 		if server.IPv6() {
 			line(2, "ip6 saddr @%s accept", routeAllSet6(server.Interface))
@@ -249,6 +268,74 @@ func Ruleset(state State) string {
 
 	line(0, "}")
 	return b.String()
+}
+
+// privateNetworks are the networks that a peer with access rules reaches only when they're in its rules, even when it
+// sends all its traffic through the tunnel: the local networks, the Docker networks and the Docker host on them
+var (
+	privateNetworks = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"),
+		netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("100.64.0.0/10"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+	}
+	privateNetworks6 = []netip.Prefix{netip.MustParsePrefix("fc00::/7"), netip.MustParsePrefix("fe80::/10")}
+)
+
+// ipFamily is a version of IP in the rules: its keyword, and the address of a peer in it
+type ipFamily struct {
+	name string
+	ipv6 bool
+}
+
+func (f ipFamily) address(peer Peer) netip.Addr {
+	if f.ipv6 {
+		return peer.Address6
+	}
+	return peer.Address
+}
+
+// families are the versions the tunnel of a server carries
+func families(server Server) []ipFamily {
+	if server.IPv6() {
+		return []ipFamily{{"ip", false}, {"ip6", true}}
+	}
+	return []ipFamily{{"ip", false}}
+}
+
+// limitedRules are the rules of the peers with access rules, in the chain of their server before the ones of all its
+// peers: their own networks, the DNS servers of the server, and nothing else of the networks of the server nor of
+// the private networks. What's left, the internet, follows the rules of all the peers: only with RouteAll.
+func limitedRules(server Server, line func(int, string, ...any)) {
+	for _, family := range families(server) {
+		var limited []netip.Addr
+		for _, peer := range server.Peers {
+			address := family.address(peer)
+			if !peer.Limited() || !address.IsValid() {
+				continue
+			}
+			limited = append(limited, address)
+			if networks := prefixes(peer.Access, family.ipv6); networks != "" {
+				line(2, "%s saddr %s %s daddr { %s } accept", family.name, address, family.name, networks)
+			}
+		}
+		peers := addresses(limited, family.ipv6)
+		if peers == "" {
+			continue
+		}
+		// the peers ask the DNS servers of the configuration file, wherever they are
+		if dns := addresses(server.DNS, family.ipv6); dns != "" {
+			line(2, "%s saddr { %s } %s daddr { %s } meta l4proto { tcp, udp } th dport 53 accept",
+				family.name, peers, family.name, dns)
+		}
+		if networks := prefixes(server.Networks, family.ipv6); networks != "" {
+			line(2, "%s saddr { %s } %s daddr { %s } drop", family.name, peers, family.name, networks)
+		}
+		private := privateNetworks
+		if family.ipv6 {
+			private = privateNetworks6
+		}
+		line(2, "%s saddr { %s } %s daddr { %s } drop", family.name, peers, family.name, prefixes(private, family.ipv6))
+	}
 }
 
 // SessionCommand returns the nftables command that adds or removes a peer logged in, by one of its addresses: the

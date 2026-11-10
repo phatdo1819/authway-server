@@ -9,6 +9,7 @@ import UiMenu, { type MenuItem } from '../components/UiMenu.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { errorMessage } from '../format'
 import { canManage, confirm, notify } from '../state'
+import ImportModal from './users/ImportModal.vue'
 import TotpModal from './users/TotpModal.vue'
 import UserDrawer from './users/UserDrawer.vue'
 
@@ -19,6 +20,7 @@ const search = ref('')
 const drawerOpen = ref(false)
 const editing = ref<User | null>(null)
 const totp = ref<{ user: User; setup: TotpSetup } | null>(null)
+const importing = ref(false)
 
 const filtered = computed(() => {
   const text = search.value.trim().toLowerCase()
@@ -142,6 +144,7 @@ function menu(user: User): MenuItem[] {
           aria-label="Search users"
           class="w-56 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-600/25 dark:border-slate-600 dark:bg-slate-900"
         />
+        <UiButton v-if="canManage()" icon="upload" @click="importing = true">Import</UiButton>
         <UiButton v-if="canManage()" variant="primary" icon="plus" @click="add">Add user</UiButton>
       </div>
     </div>
@@ -153,7 +156,7 @@ function menu(user: User): MenuItem[] {
       class="mt-8"
       icon="users"
       title="No user yet"
-      text="Add the users, then give each one a peer on the servers they use."
+      text="Add the users, then give each one a peer on the servers they use. Many at once: Import, from a CSV file."
     />
     <div
       v-else-if="users.length"
@@ -204,5 +207,6 @@ function menu(user: User): MenuItem[] {
 
     <UserDrawer :open="drawerOpen" :user="editing" @close="drawerOpen = false" @saved="saved" />
     <TotpModal :data="totp" @close="totp = null" />
+    <ImportModal :open="importing" @close="importing = false" @imported="load" />
   </div>
 </template>

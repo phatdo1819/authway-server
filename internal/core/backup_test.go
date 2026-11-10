@@ -42,6 +42,19 @@ func (f *fixture) snapshot() configSnapshot {
 			f.t.Fatal(err)
 		}
 	}
+	// the count of the changes isn't in a backup: a restore logs every administrator out, their forms with them
+	for index := range snap.Servers {
+		snap.Servers[index].Version, snap.Servers[index].UpdatedBy = 0, ""
+	}
+	for index := range snap.Peers {
+		snap.Peers[index].Version, snap.Peers[index].UpdatedBy = 0, ""
+	}
+	for index := range snap.Users {
+		snap.Users[index].Version, snap.Users[index].UpdatedBy = 0, ""
+	}
+	for index := range snap.Admins {
+		snap.Admins[index].Version, snap.Admins[index].UpdatedBy = 0, ""
+	}
 	snap.Meta = map[string]string{}
 	for _, key := range []string{"public_host", "password_policy", "require_admin_mfa", "enroll_hours"} {
 		snap.Meta[key], _ = q.Meta(key)

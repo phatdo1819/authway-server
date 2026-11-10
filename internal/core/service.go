@@ -70,6 +70,26 @@ const (
 
 var ErrNotFound = errors.New("not_found")
 
+// ChangedError refuses to save a form over a change made since it opened: another administrator saved the same
+// user, peer, server or administrator meanwhile. Current is its view of now, with its version; By made the latest
+// change, at At. The web UI shows what changed, keeps what the administrator typed, and saves again with the new
+// version.
+type ChangedError struct {
+	Current any
+	By      string
+	At      int64
+}
+
+func (e *ChangedError) Error() string {
+	return "changed since the form opened"
+}
+
+// stale tells whether a form opened at version saw an older row than the one of now. 0 checks nothing: a client
+// that doesn't send the version saves as before.
+func stale(version, current int64) bool {
+	return version != 0 && version != current
+}
+
 // ValidationError tells which fields are wrong, with a code for each: required, invalid, taken, in_use...
 type ValidationError struct {
 	Fields map[string]string
@@ -142,6 +162,10 @@ type Service struct {
 	applyError string
 	stats      map[wgtypes.Key]network.PeerStats
 	statsAt    time.Time
+	// when each peer last sent something, and the keepalive of each server by interface, from the latest state: the
+	// status of the peers, connected or not
+	activity   map[wgtypes.Key]peerActivity
+	keepalives map[string]int
 	// why the latest reading of the tunnels failed, for the System page
 	statsError string
 	pruned     time.Time
@@ -268,11 +292,14 @@ func (s *Service) stateLocked() (network.State, error) {
 		return state, err
 	}
 	interfaces := map[int64]string{}
+	keepalives := map[string]int{}
 	for _, server := range servers {
 		if server.Enabled {
 			interfaces[server.ID] = server.Interface
+			keepalives[server.Interface] = server.Keepalive
 		}
 	}
+	s.keepalives = keepalives
 	for _, server := range servers {
 		if !server.Enabled {
 			continue
@@ -312,6 +339,11 @@ func (s *Service) stateLocked() (network.State, error) {
 				entry.Networks = append(entry.Networks, prefix)
 			}
 		}
+		for _, text := range server.DNS {
+			if address, err := netip.ParseAddr(text); err == nil {
+				entry.DNS = append(entry.DNS, address)
+			}
+		}
 		peers, err := q.Peers(server.ID)
 		if err != nil {
 			return state, err
@@ -335,6 +367,7 @@ func (s *Service) stateLocked() (network.State, error) {
 			other, _ := address6(tunnel.Masked(), tunnel6, address)
 			entry.Peers = append(entry.Peers, network.Peer{
 				PublicKey: public, PresharedKey: preshared, Address: address, Address6: other, RouteAll: peer.RouteAll,
+				Access: peerAccess(&peer, entry.Networks),
 			})
 		}
 		for _, session := range sessions {

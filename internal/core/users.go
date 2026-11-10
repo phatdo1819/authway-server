@@ -23,6 +23,8 @@ type UserInput struct {
 	FullName string `json:"full_name"`
 	Password string `json:"password"`
 	Disabled bool   `json:"disabled"`
+	// when edited: the version the form opened with, see ChangedError; 0 doesn't check it
+	Version int64 `json:"version"`
 }
 
 func (s *Service) CreateUser(by Actor, input UserInput) (*UserView, error) {
@@ -38,7 +40,7 @@ func (s *Service) CreateUser(by Actor, input UserInput) (*UserView, error) {
 	}
 	user.PasswordHash = hash
 	now := s.now().Unix()
-	user.CreatedAt, user.UpdatedAt = now, now
+	user.CreatedAt, user.UpdatedAt, user.UpdatedBy = now, now, by.Username
 	if err := s.db.Q().CreateUser(user); err != nil {
 		return nil, takenOr(err, "username")
 	}
@@ -52,27 +54,35 @@ func (s *Service) CreateUser(by Actor, input UserInput) (*UserView, error) {
 }
 
 func (s *Service) UpdateUser(by Actor, id int64, input UserInput) (*UserView, error) {
-	s.mu.Lock()
-	current, err := s.db.Q().User(id)
-	s.mu.Unlock()
-	if err != nil {
-		return nil, notFound(err)
-	}
-	user := *current
 	// the hash takes time: out of the lock
-	hash, err := s.checkUser(input, &user, false)
+	var checked store.User
+	hash, err := s.checkUser(input, &checked, false)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if other, err := s.db.Q().UserByName(user.Username); err == nil && other.ID != id {
+	// the user of now, not of before the hash: an authenticator set up meanwhile stays
+	current, err := s.db.Q().User(id)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	if stale(input.Version, current.Version) {
+		view, err := s.userViewLocked(current)
+		if err != nil {
+			return nil, err
+		}
+		return nil, &ChangedError{Current: view, By: current.UpdatedBy, At: current.UpdatedAt}
+	}
+	if other, err := s.db.Q().UserByName(checked.Username); err == nil && other.ID != id {
 		return nil, &ValidationError{Fields: map[string]string{"username": "taken"}}
 	}
+	user := *current
+	user.Username, user.FullName, user.Disabled = checked.Username, checked.FullName, checked.Disabled
 	if hash != "" {
 		user.PasswordHash = hash
 	}
-	user.UpdatedAt = s.now().Unix()
+	user.UpdatedAt, user.UpdatedBy = s.now().Unix(), by.Username
 	if err := s.db.Q().UpdateUser(&user); err != nil {
 		return nil, takenOr(notFound(err), "username")
 	}
@@ -141,7 +151,7 @@ func (s *Service) SetupTOTP(by Actor, id int64) (*TOTPSetup, error) {
 		return nil, notFound(err)
 	}
 	user.TOTPSecret = totp.NewSecret()
-	user.UpdatedAt = s.now().Unix()
+	user.UpdatedAt, user.UpdatedBy = s.now().Unix(), by.Username
 	if err := s.db.Q().UpdateUser(user); err != nil {
 		return nil, err
 	}
@@ -160,7 +170,7 @@ func (s *Service) RemoveTOTP(by Actor, id int64) error {
 		return notFound(err)
 	}
 	user.TOTPSecret = ""
-	user.UpdatedAt = s.now().Unix()
+	user.UpdatedAt, user.UpdatedBy = s.now().Unix(), by.Username
 	if err := s.db.Q().UpdateUser(user); err != nil {
 		return err
 	}

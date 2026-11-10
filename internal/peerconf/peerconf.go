@@ -109,25 +109,58 @@ func (c *Config) String() string {
 	return b.String()
 }
 
-// FileName is a name the WireGuard apps take as the name of the tunnel: at most 32 letters, digits and "_=+.-".
-func FileName(serverName string) string {
+// maxTunnelName is the longest name of a tunnel in the WireGuard apps
+const maxTunnelName = 32
+
+// FileName is the name of the configuration file of a peer, <server>-<peer>.conf: the WireGuard apps take it as the
+// name of the tunnel, so at most 32 letters, digits and "_=+.-". When both names don't fit, the longer one is cut,
+// down to half of the room at least.
+func FileName(serverName, peerName string) string {
+	server, peer := tunnelName(serverName), tunnelName(peerName)
+	switch {
+	case server == "" && peer == "":
+		return "wireguard.conf"
+	case peer == "":
+		return cut(server, maxTunnelName) + ".conf"
+	case server == "":
+		return cut(peer, maxTunnelName) + ".conf"
+	}
+	room := maxTunnelName - 1
+	if len(server)+len(peer) > room {
+		half := room / 2
+		switch {
+		case len(server) <= half:
+			peer = cut(peer, room-len(server))
+		case len(peer) <= half:
+			server = cut(server, room-len(peer))
+		default:
+			server = cut(server, half)
+			peer = cut(peer, room-len(server))
+		}
+	}
+	return server + "-" + peer + ".conf"
+}
+
+// tunnelName keeps the characters of a name that a tunnel name takes, a space as "-"
+func tunnelName(name string) string {
 	var b strings.Builder
-	for _, r := range serverName {
+	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', strings.ContainsRune("_=+.-", r):
 			b.WriteRune(r)
 		case r == ' ':
 			b.WriteByte('-')
 		}
-		if b.Len() >= 32 {
-			break
-		}
 	}
-	name := strings.Trim(b.String(), ".-")
-	if name == "" {
-		name = "wireguard"
+	return strings.Trim(b.String(), ".-")
+}
+
+// cut keeps the first characters of a tunnel name, at most size, without a "." or "-" at the end
+func cut(name string, size int) string {
+	if len(name) > size {
+		name = name[:size]
 	}
-	return name + ".conf"
+	return strings.TrimRight(name, ".-")
 }
 
 func oneLine(text string) string {

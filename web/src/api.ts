@@ -49,6 +49,10 @@ export interface Server {
   sessions: number
   created_at: number
   updated_at: number
+  // counts the changes made by the administrators: a form sends the one it opened with, see ApiError data of
+  // 'changed'; updated_by made the latest one
+  version: number
+  updated_by: string
 }
 
 export type ServerInput = Pick<
@@ -77,7 +81,7 @@ export type ServerInput = Pick<
   | 'reachable_servers'
   | 'routed'
   | 'inbound'
->
+> & { version?: number }
 
 // a route to the tunnel network through the address of the container (via, "" when unknown) towards a network;
 // driver: macvlan works, veth (a Docker bridge) needs the routes of the Docker host, ipvlan doesn't work
@@ -143,11 +147,16 @@ export interface Peer {
   address6: string
   public_key: string
   route_all: boolean
+  // the access rules: the networks the peer reaches, [] for all the networks of its server
+  access: string[]
   blocked: boolean
   alerts: number
   connected: boolean
   last_handshake: number
   endpoint: string
+  // without a handshake since Authway Server started: the latest time the history saw the peer, and its public IP
+  last_seen: number
+  last_endpoint: string
   received: number
   sent: number
   session: Session | null
@@ -155,6 +164,10 @@ export interface Peer {
   device: PeerDevice | null
   created_at: number
   updated_at: number
+  // counts the changes made by the administrators: a form sends the one it opened with, see ApiError data of
+  // 'changed'; updated_by made the latest one
+  version: number
+  updated_by: string
 }
 
 // the device of a peer: enrolled, waiting for one (until enrollment_until) or closed (an administrator allows one)
@@ -197,6 +210,10 @@ export interface PeerInput {
   user_id: number
   route_all: boolean
   address?: string
+  // [] for all the networks of the server
+  access?: string[]
+  // when edited: the version the form opened with
+  version?: number
 }
 
 export interface User {
@@ -209,6 +226,10 @@ export interface User {
   sessions: number
   created_at: number
   updated_at: number
+  // counts the changes made by the administrators: a form sends the one it opened with, see ApiError data of
+  // 'changed'; updated_by made the latest one
+  version: number
+  updated_by: string
 }
 
 export interface UserInput {
@@ -216,6 +237,8 @@ export interface UserInput {
   full_name: string
   password: string
   disabled: boolean
+  // when edited: the version the form opened with
+  version?: number
 }
 
 export interface EventItem {
@@ -438,6 +461,10 @@ export interface AdminAccount {
   last_login_from: string
   created_at: number
   updated_at: number
+  // counts the changes made by the administrators: a form sends the one it opened with, see ApiError data of
+  // 'changed'; updated_by made the latest one
+  version: number
+  updated_by: string
 }
 
 export interface AdminInput {
@@ -447,11 +474,36 @@ export interface AdminInput {
   disabled: boolean
   // only when added: the first password, changed at the first login
   password?: string
+  // when edited: the version the form opened with
+  version?: number
 }
 
 export interface TotpSetup {
   secret: string
   uri: string
+}
+
+// an import of users from a CSV file: the user each row adds, or why it can't (by column, the codes of the
+// validation)
+export interface ImportRow {
+  line: number
+  username: string
+  full_name: string
+  // '' for a row skipped
+  password: '' | 'given' | 'generated'
+  // a user already there, with skip: the row adds and changes nothing
+  skipped?: boolean
+  errors?: Record<string, string>
+}
+
+export interface ImportResult {
+  rows: ImportRow[]
+  users: number
+  skipped: number
+  invalid: number
+  imported: boolean
+  // the passwords made for the users without one in the file: shown this once
+  passwords?: { username: string; password: string }[]
 }
 
 // what a backup has, before a restore
@@ -474,13 +526,16 @@ export class ApiError extends Error {
   fields: Record<string, string>
   // what's wrong, in words, when a code isn't enough: the content of a backup
   detail: string
+  // the whole answer: for 'changed', current (what it is now), by and at
+  data: Record<string, unknown>
 
-  constructor(status: number, code: string, fields: Record<string, string> = {}, detail = '') {
+  constructor(status: number, code: string, fields: Record<string, string> = {}, detail = '', data: Record<string, unknown> = {}) {
     super(code)
     this.status = status
     this.code = code
     this.fields = fields
     this.detail = detail
+    this.data = data
   }
 }
 
@@ -523,7 +578,7 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
     if (response.status === 403 && data.error === 'setup_required' && data.setup) {
       onSetupRequired(data.setup)
     }
-    throw new ApiError(response.status, data.error ?? 'http_' + response.status, data.fields ?? {}, data.detail ?? '')
+    throw new ApiError(response.status, data.error ?? 'http_' + response.status, data.fields ?? {}, data.detail ?? '', data)
   }
   return response
 }
@@ -597,6 +652,10 @@ export const api = {
     const match = /filename="?([^";]+)"?/.exec(disposition)
     return { name: match?.[1] ?? 'wireguard.conf', text: await response.text() }
   },
+
+  // users from a CSV file: checked, or imported whole; skip: the users already there are skipped, not refused
+  importCheck: (csv: string, skip: boolean) => json<ImportResult>('POST', '/import', { csv, check: true, skip_existing: skip }),
+  importFile: (csv: string, skip: boolean) => json<ImportResult>('POST', '/import', { csv, check: false, skip_existing: skip }),
 
   users: () => json<User[]>('GET', '/users'),
   createUser: (input: UserInput) => json<User>('POST', '/users', input),

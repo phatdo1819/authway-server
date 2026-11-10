@@ -26,6 +26,10 @@ type Admin struct {
 	LastLoginFrom      string
 	CreatedAt          int64
 	UpdatedAt          int64
+	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
+	// web UI saved over a change made since it opened is refused
+	Version   int64
+	UpdatedBy string
 }
 
 type User struct {
@@ -37,6 +41,10 @@ type User struct {
 	Disabled     bool
 	CreatedAt    int64
 	UpdatedAt    int64
+	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
+	// web UI saved over a change made since it opened is refused
+	Version   int64
+	UpdatedBy string
 }
 
 // AuthMode says what the peers of a server do before their traffic passes.
@@ -87,6 +95,10 @@ type Server struct {
 	Inbound   bool
 	CreatedAt int64
 	UpdatedAt int64
+	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
+	// web UI saved over a change made since it opened is refused
+	Version   int64
+	UpdatedBy string
 }
 
 const (
@@ -119,10 +131,16 @@ type Peer struct {
 	PublicKey    string
 	PresharedKey string
 	RouteAll     bool
+	// the access rules: the networks the peer reaches, inside the ones of its server; nil for all of them
+	Access []string
 	// blocked after a copy of its configuration, until an administrator clears its alerts or gives it new keys
 	Blocked   bool
 	CreatedAt int64
 	UpdatedAt int64
+	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
+	// web UI saved over a change made since it opened is refused
+	Version   int64
+	UpdatedBy string
 	// read only, from its device: the WireGuard public key the enrolled device gave the peer, and when; "" when the
 	// peer connects with the key of its configuration file
 	DeviceKey   string
@@ -218,13 +236,13 @@ type Event struct {
 
 // Admins
 
-const adminColumns = "id, username, full_name, password_hash, role, totp_secret, disabled, must_change_password, last_login_at, last_login_from, created_at, updated_at"
+const adminColumns = "id, username, full_name, password_hash, role, totp_secret, disabled, must_change_password, last_login_at, last_login_from, created_at, updated_at, version, updated_by"
 
 func scanAdmin(row interface{ Scan(...any) error }) (*Admin, error) {
 	var a Admin
 	var disabled, mustChange int
 	err := row.Scan(&a.ID, &a.Username, &a.FullName, &a.PasswordHash, &a.Role, &a.TOTPSecret, &disabled, &mustChange,
-		&a.LastLoginAt, &a.LastLoginFrom, &a.CreatedAt, &a.UpdatedAt)
+		&a.LastLoginAt, &a.LastLoginFrom, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.UpdatedBy)
 	a.Disabled, a.MustChangePassword = disabled != 0, mustChange != 0
 	return &a, err
 }
@@ -279,12 +297,13 @@ func (t *Tx) CreateAdmin(a *Admin) error {
 	}
 	// an id of 0 is chosen by SQLite; a restore gives the ones of the backup
 	result, err := t.q.Exec(`INSERT INTO admins (id, username, full_name, password_hash, role, totp_secret, disabled,
-		must_change_password, last_login_at, last_login_from, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		must_change_password, last_login_at, last_login_from, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullID(a.ID), a.Username, a.FullName, a.PasswordHash, a.Role, a.TOTPSecret, boolInt(a.Disabled),
-		boolInt(a.MustChangePassword), a.LastLoginAt, a.LastLoginFrom, a.CreatedAt, a.UpdatedAt)
+		boolInt(a.MustChangePassword), a.LastLoginAt, a.LastLoginFrom, a.CreatedAt, a.UpdatedAt, a.UpdatedBy)
 	if err != nil {
 		return conflict(err)
 	}
+	a.Version = 1
 	a.ID, err = result.LastInsertId()
 	return err
 }
@@ -292,8 +311,8 @@ func (t *Tx) CreateAdmin(a *Admin) error {
 // UpdateAdmin saves the name, the role and the state of an administrator; the password and the authenticator have
 // methods of their own.
 func (t *Tx) UpdateAdmin(a *Admin) error {
-	return changed(t.q.Exec("UPDATE admins SET full_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?",
-		a.FullName, a.Role, boolInt(a.Disabled), a.UpdatedAt, a.ID))
+	return updated(t.q.QueryRow("UPDATE admins SET full_name = ?, role = ?, disabled = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
+		a.FullName, a.Role, boolInt(a.Disabled), a.UpdatedAt, a.UpdatedBy, a.ID), &a.Version)
 }
 
 // SetAdminPassword sets the password of an administrator, and whether it must be changed at the next login.
@@ -317,12 +336,13 @@ func (t *Tx) DeleteAdmin(id int64) error {
 
 // Users
 
-const userColumns = "id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at"
+const userColumns = "id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at, version, updated_by"
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var disabled int
-	err := row.Scan(&u.ID, &u.Username, &u.FullName, &u.PasswordHash, &u.TOTPSecret, &disabled, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.FullName, &u.PasswordHash, &u.TOTPSecret, &disabled, &u.CreatedAt, &u.UpdatedAt,
+		&u.Version, &u.UpdatedBy)
 	u.Disabled = disabled != 0
 	return &u, err
 }
@@ -355,18 +375,19 @@ func (t *Tx) UserByName(username string) (*User, error) {
 }
 
 func (t *Tx) CreateUser(u *User) error {
-	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt)
+	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt, u.UpdatedBy)
 	if err != nil {
 		return conflict(err)
 	}
+	u.Version = 1
 	u.ID, err = result.LastInsertId()
 	return err
 }
 
 func (t *Tx) UpdateUser(u *User) error {
-	return changed(t.q.Exec("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, disabled = ?, updated_at = ? WHERE id = ?",
-		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.UpdatedAt, u.ID))
+	return updated(t.q.QueryRow("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, disabled = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
+		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.UpdatedAt, u.UpdatedBy, u.ID), &u.Version)
 }
 
 func (t *Tx) DeleteUser(id int64) error {
@@ -375,7 +396,7 @@ func (t *Tx) DeleteUser(id int64) error {
 
 // Servers
 
-const serverColumns = "id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at"
+const serverColumns = "id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, version, updated_by"
 
 func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	var s Server
@@ -384,7 +405,7 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	err := row.Scan(&s.ID, &s.Name, &s.Interface, &enabled, &s.ListenPort, &s.PublicHost, &s.PublicPort, &s.PrivateKey,
 		&s.Network, &s.Network6, &networks, &dns, &s.MTU, &s.Keepalive, &s.AuthMode, &s.SessionTimeout, &s.LockEndpoint, &detect,
 		&block, &redirect, &fallbacks, &binding, &machineID, &clientToClient, &reachable, &routed, &inbound, &s.CreatedAt,
-		&s.UpdatedAt)
+		&s.UpdatedAt, &s.Version, &s.UpdatedBy)
 	s.Routed = routed != 0
 	s.Inbound = inbound != 0
 	s.Enabled = enabled != 0
@@ -424,26 +445,27 @@ func (t *Tx) Server(id int64) (*Server, error) {
 }
 
 func (t *Tx) CreateServer(s *Server) error {
-	result, err := t.q.Exec("INSERT INTO servers (id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	result, err := t.q.Exec("INSERT INTO servers (id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		nullID(s.ID), s.Name, s.Interface, boolInt(s.Enabled), s.ListenPort, s.PublicHost, s.PublicPort, s.PrivateKey, s.Network, s.Network6,
 		toJSON(s.Networks), toJSON(s.DNS), s.MTU, s.Keepalive, s.AuthMode, s.SessionTimeout, s.LockEndpoint,
 		boolInt(s.DetectCopies), boolInt(s.BlockCopies), boolInt(s.Redirect), toJSON(s.FallbackEndpoints),
 		boolInt(s.DeviceBinding), boolInt(s.MachineID), boolInt(s.ClientToClient), idsToJSON(s.ReachableServers),
-		boolInt(s.Routed), boolInt(s.Inbound), s.CreatedAt, s.UpdatedAt)
+		boolInt(s.Routed), boolInt(s.Inbound), s.CreatedAt, s.UpdatedAt, s.UpdatedBy)
 	if err != nil {
 		return conflict(err)
 	}
+	s.Version = 1
 	s.ID, err = result.LastInsertId()
 	return err
 }
 
 func (t *Tx) UpdateServer(s *Server) error {
-	return changed(t.q.Exec("UPDATE servers SET name = ?, enabled = ?, listen_port = ?, public_host = ?, public_port = ?, private_key = ?, network = ?, network6 = ?, networks = ?, dns = ?, mtu = ?, keepalive = ?, auth_mode = ?, session_timeout = ?, lock_endpoint = ?, detect_copies = ?, block_copies = ?, redirect = ?, fallback_endpoints = ?, device_binding = ?, machine_id = ?, client_to_client = ?, reachable_servers = ?, routed = ?, inbound = ?, updated_at = ? WHERE id = ?",
+	return updated(t.q.QueryRow("UPDATE servers SET name = ?, enabled = ?, listen_port = ?, public_host = ?, public_port = ?, private_key = ?, network = ?, network6 = ?, networks = ?, dns = ?, mtu = ?, keepalive = ?, auth_mode = ?, session_timeout = ?, lock_endpoint = ?, detect_copies = ?, block_copies = ?, redirect = ?, fallback_endpoints = ?, device_binding = ?, machine_id = ?, client_to_client = ?, reachable_servers = ?, routed = ?, inbound = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
 		s.Name, boolInt(s.Enabled), s.ListenPort, s.PublicHost, s.PublicPort, s.PrivateKey, s.Network, s.Network6, toJSON(s.Networks),
 		toJSON(s.DNS), s.MTU, s.Keepalive, s.AuthMode, s.SessionTimeout, s.LockEndpoint, boolInt(s.DetectCopies),
 		boolInt(s.BlockCopies), boolInt(s.Redirect), toJSON(s.FallbackEndpoints), boolInt(s.DeviceBinding),
 		boolInt(s.MachineID), boolInt(s.ClientToClient), idsToJSON(s.ReachableServers), boolInt(s.Routed),
-		boolInt(s.Inbound), s.UpdatedAt, s.ID))
+		boolInt(s.Inbound), s.UpdatedAt, s.UpdatedBy, s.ID), &s.Version)
 }
 
 func (t *Tx) DeleteServer(id int64) error {
@@ -453,16 +475,18 @@ func (t *Tx) DeleteServer(id int64) error {
 // Peers
 
 // the key the device gave the peer comes from its device: a peer has one device at most
-const peerColumns = "id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, " +
+const peerColumns = "id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, version, updated_by, " +
 	"COALESCE((SELECT wireguard_key FROM devices WHERE devices.peer_id = peers.id), ''), " +
 	"COALESCE((SELECT wireguard_key_at FROM devices WHERE devices.peer_id = peers.id), 0)"
 
 func scanPeer(row interface{ Scan(...any) error }) (*Peer, error) {
 	var p Peer
 	var enabled, routeAll, blocked int
+	var access string
 	var userID sql.NullInt64
 	err := row.Scan(&p.ID, &p.ServerID, &p.Name, &enabled, &userID, &p.Address, &p.PrivateKey, &p.PublicKey,
-		&p.PresharedKey, &routeAll, &blocked, &p.CreatedAt, &p.UpdatedAt, &p.DeviceKey, &p.DeviceKeyAt)
+		&p.PresharedKey, &routeAll, &blocked, &p.CreatedAt, &p.UpdatedAt, &access, &p.Version, &p.UpdatedBy, &p.DeviceKey, &p.DeviceKeyAt)
+	p.Access = accessFromText(access)
 	p.Enabled = enabled != 0
 	p.RouteAll = routeAll != 0
 	p.Blocked = blocked != 0
@@ -505,20 +529,21 @@ func (t *Tx) Peer(id int64) (*Peer, error) {
 }
 
 func (t *Tx) CreatePeer(p *Peer) error {
-	result, err := t.q.Exec("INSERT INTO peers (id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	result, err := t.q.Exec("INSERT INTO peers (id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		nullID(p.ID), p.ServerID, p.Name, boolInt(p.Enabled), nullID(p.UserID), p.Address, p.PrivateKey, p.PublicKey, p.PresharedKey,
-		boolInt(p.RouteAll), boolInt(p.Blocked), p.CreatedAt, p.UpdatedAt)
+		boolInt(p.RouteAll), boolInt(p.Blocked), p.CreatedAt, p.UpdatedAt, accessToText(p.Access), p.UpdatedBy)
 	if err != nil {
 		return conflict(err)
 	}
+	p.Version = 1
 	p.ID, err = result.LastInsertId()
 	return err
 }
 
 func (t *Tx) UpdatePeer(p *Peer) error {
-	return changed(t.q.Exec("UPDATE peers SET name = ?, enabled = ?, user_id = ?, address = ?, private_key = ?, public_key = ?, preshared_key = ?, route_all = ?, blocked = ?, updated_at = ? WHERE id = ?",
+	return updated(t.q.QueryRow("UPDATE peers SET name = ?, enabled = ?, user_id = ?, address = ?, private_key = ?, public_key = ?, preshared_key = ?, route_all = ?, blocked = ?, updated_at = ?, access = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
 		p.Name, boolInt(p.Enabled), nullID(p.UserID), p.Address, p.PrivateKey, p.PublicKey, p.PresharedKey,
-		boolInt(p.RouteAll), boolInt(p.Blocked), p.UpdatedAt, p.ID))
+		boolInt(p.RouteAll), boolInt(p.Blocked), p.UpdatedAt, accessToText(p.Access), p.UpdatedBy, p.ID), &p.Version)
 }
 
 func (t *Tx) DeletePeer(id int64) error {
@@ -722,6 +747,12 @@ func (t *Tx) PruneAlerts(before int64) error {
 }
 
 // changed turns an update of no row into ErrNotFound
+// updated reads the version that an UPDATE ... RETURNING version gave its row: ErrNotFound without the row,
+// ErrConflict when the change takes a unique value of another one.
+func updated(row *sql.Row, version *int64) error {
+	return notFound(conflict(row.Scan(version)))
+}
+
 func changed(result sql.Result, err error) error {
 	if err != nil {
 		return conflict(err)

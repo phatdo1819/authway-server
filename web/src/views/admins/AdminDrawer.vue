@@ -2,12 +2,14 @@
 import { computed, ref, watch } from 'vue'
 
 import { api, ApiError, type AdminAccount, type AdminInput, type Role } from '../../api'
+import ConflictNotice from '../../components/ConflictNotice.vue'
 import UiButton from '../../components/UiButton.vue'
 import UiDrawer from '../../components/UiDrawer.vue'
 import UiInput from '../../components/UiInput.vue'
 import UiNotice from '../../components/UiNotice.vue'
 import UiSelect from '../../components/UiSelect.vue'
 import UiToggle from '../../components/UiToggle.vue'
+import { useEditGuard } from '../../conflict'
 import { errorMessage, fieldMessage, generatePassword, policyText, roles } from '../../format'
 import { notify, session } from '../../state'
 
@@ -20,6 +22,13 @@ const error = ref('')
 const busy = ref(false)
 const own = computed(() => props.admin !== null && props.admin.id === session.me?.id)
 const roleDescription = computed(() => roles.find((role) => role.value === form.value.role)?.description ?? '')
+// another administrator saving this account meanwhile
+const guard = useEditGuard((admin: AdminAccount) => ({ full_name: admin.full_name, role: admin.role, disabled: admin.disabled }), {
+  full_name: 'Full name',
+  role: 'Role',
+  disabled: 'Disabled',
+})
+const conflict = guard.conflict
 
 watch(
   () => props.open,
@@ -30,6 +39,7 @@ watch(
     errors.value = {}
     error.value = ''
     const admin = props.admin
+    guard.start(admin)
     form.value = admin
       ? { username: admin.username, full_name: admin.full_name, role: admin.role, disabled: admin.disabled }
       : { username: '', full_name: '', role: 'operator', disabled: false, password: generatePassword(session.me?.password_policy, true) }
@@ -53,9 +63,10 @@ async function save() {
   errors.value = {}
   error.value = ''
   busy.value = true
+  let again = false
   try {
     if (props.admin) {
-      await api.updateAdmin(props.admin.id, { ...form.value, password: undefined })
+      await api.updateAdmin(props.admin.id, { ...form.value, password: undefined, version: guard.version.value })
       notify(`${form.value.username} saved.`)
     } else {
       await api.createAdmin(form.value)
@@ -63,13 +74,28 @@ async function save() {
     }
     emit('saved')
   } catch (e) {
+    const { full_name, role, disabled } = form.value
+    const merged = guard.refused(e, { full_name, role, disabled })
+    if (merged) {
+      Object.assign(form.value, merged.values)
+      again = merged.again
+      return
+    }
     if (e instanceof ApiError && e.code === 'validation') {
       errors.value = e.fields
     }
     error.value = errorMessage(e)
   } finally {
     busy.value = false
+    // only what the form doesn't show changed meanwhile: saved again with the new version
+    if (again) {
+      save()
+    }
   }
+}
+
+function useTheirs() {
+  Object.assign(form.value, guard.useTheirs())
 }
 
 const roleOptions = roles.map((role) => ({ value: role.value, label: role.label })) as { value: Role; label: string }[]
@@ -78,6 +104,7 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
 <template>
   <UiDrawer :open="open" :title="admin ? `Edit ${admin.username}` : 'Add administrator'" @close="emit('close')">
     <form id="admin-form" class="space-y-6" novalidate @submit.prevent="save">
+      <ConflictNotice :conflict="conflict" noun="administrator" @theirs="useTheirs" />
       <UiInput
         v-model="form.username"
         label="Username"

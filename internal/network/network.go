@@ -47,6 +47,8 @@ type Server struct {
 	// Networks also start connections to the peers, those logged in when Gated
 	Routed  bool
 	Inbound bool
+	// the DNS servers of the peers: the peers with access rules reach them on port 53, wherever they are
+	DNS []netip.Addr
 }
 
 // IPv6 tells whether the tunnel of the server carries IPv6.
@@ -61,6 +63,14 @@ type Peer struct {
 	// invalid when the server has no IPv6 network
 	Address6 netip.Addr
 	RouteAll bool
+	// the access rules: the networks the peer reaches, of both versions, inside Networks of its server; nil for all
+	// of them. With RouteAll, the peer also reaches the internet, but no other private network
+	Access []netip.Prefix
+}
+
+// Limited tells whether the peer has access rules.
+func (p Peer) Limited() bool {
+	return p.Access != nil
 }
 
 // PeerStats is what WireGuard knows of a peer.
@@ -71,6 +81,8 @@ type PeerStats struct {
 	LastHandshake time.Time // zero before the first one
 	Received      int64
 	Sent          int64
+	// not from WireGuard: when the peer last sent something, as far as Authway Server saw its counter grow
+	Active time.Time
 }
 
 // Network applies the configuration. The methods are called one at a time.

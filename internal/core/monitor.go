@@ -33,6 +33,7 @@ func (s *Service) Tick() {
 	s.ticked = now
 	s.statsError = ""
 	if statsErr == nil {
+		s.followActivityLocked(stats, now)
 		s.stats = stats
 		s.statsAt = now
 	} else {

@@ -11,7 +11,8 @@ Once Authway Server is [installed](install.md):
    app. In **Settings**, check the password policy, and require an authenticator of every administrator if you want.
    **Administrators** adds the other administrators, each with its role.
 3. **Add the users**, in **Users**, each with a password. For the servers that ask for a code, set up their
-   authenticator: the user scans the QR code with their app.
+   authenticator: the user scans the QR code with their app. Many at once: **Import**, from a CSV file of usernames, full
+   names and passwords.
 4. **Add a WireGuard server**, in **WireGuard servers > Add server**:
    - a name, the public address (the one of the install, proposed) and the UDP port: 51820 for the first, forwarded
      by your router;
@@ -20,7 +21,8 @@ Once Authway Server is [installed](install.md):
    - the login: key only, password, or password and code; then the protections against copies, device binding, NAT
      or routed, and the traffic between peers. Each setting says what it does, and the **?** explains NAT and routed.
 5. **Add a peer** to the server: on a server with login, choose its user. The address in the tunnel is the next free
-   one. The configuration opens: download the file, or show the QR code to a phone.
+   one. Under **Networks it reaches**, keep all the networks of the server, or choose only some, `192.168.1.10` for
+   one device. The configuration opens: download the file, or show the QR code to a phone.
 6. **Connect a device**: import the file in Authway, or in a WireGuard app and log in with a browser. See
    [Connect a device](#connect-a-device) below.
 7. **Check**: the panel of the server shows the peers connected and logged in, **Sessions** who is logged in now,

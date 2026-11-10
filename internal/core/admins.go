@@ -59,13 +59,18 @@ type AdminView struct {
 	LastLoginFrom      string `json:"last_login_from"`
 	CreatedAt          int64  `json:"created_at"`
 	UpdatedAt          int64  `json:"updated_at"`
+	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
+	// made since refuses the save. UpdatedBy made the latest one
+	Version   int64  `json:"version"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 func adminView(a *store.Admin) AdminView {
 	return AdminView{
 		ID: a.ID, Username: a.Username, FullName: a.FullName, Role: a.Role, TOTP: a.TOTPSecret != "",
 		Disabled: a.Disabled, MustChangePassword: a.MustChangePassword, LastLoginAt: a.LastLoginAt,
-		LastLoginFrom: a.LastLoginFrom, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		LastLoginFrom: a.LastLoginFrom, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, Version: a.Version,
+		UpdatedBy: a.UpdatedBy,
 	}
 }
 
@@ -77,6 +82,8 @@ type AdminInput struct {
 	Role     string `json:"role"`
 	Disabled bool   `json:"disabled"`
 	Password string `json:"password"`
+	// when edited: the version the form opened with, see ChangedError; 0 doesn't check it
+	Version int64 `json:"version"`
 }
 
 type pendingSecret struct {
@@ -299,7 +306,7 @@ func (s *Service) CreateAdmin(by Actor, input AdminInput) (*AdminView, error) {
 	now := s.now().Unix()
 	admin := &store.Admin{
 		Username: username, FullName: strings.TrimSpace(input.FullName), PasswordHash: hash, Role: input.Role,
-		Disabled: input.Disabled, MustChangePassword: true, CreatedAt: now, UpdatedAt: now,
+		Disabled: input.Disabled, MustChangePassword: true, CreatedAt: now, UpdatedAt: now, UpdatedBy: actor.Username,
 	}
 	if err := s.db.Q().CreateAdmin(admin); err != nil {
 		return nil, takenOr(err, "username")
@@ -333,6 +340,10 @@ func (s *Service) UpdateAdmin(by Actor, id int64, input AdminInput) (*AdminView,
 	if err != nil {
 		return nil, notFound(err)
 	}
+	if stale(input.Version, admin.Version) {
+		view := adminView(admin)
+		return nil, &ChangedError{Current: &view, By: admin.UpdatedBy, At: admin.UpdatedAt}
+	}
 	if id == by.ID {
 		if input.Role != admin.Role {
 			c.fail("role", "own_account")
@@ -362,7 +373,7 @@ func (s *Service) UpdateAdmin(by Actor, id int64, input AdminInput) (*AdminView,
 	admin.FullName = strings.TrimSpace(input.FullName)
 	admin.Role = input.Role
 	admin.Disabled = input.Disabled
-	admin.UpdatedAt = s.now().Unix()
+	admin.UpdatedAt, admin.UpdatedBy = s.now().Unix(), actor.Username
 	if err := s.db.Q().UpdateAdmin(admin); err != nil {
 		return nil, notFound(err)
 	}

@@ -2,11 +2,13 @@
 import { computed, ref, watch } from 'vue'
 
 import { api, ApiError, type User, type UserInput } from '../../api'
+import ConflictNotice from '../../components/ConflictNotice.vue'
 import UiButton from '../../components/UiButton.vue'
 import UiDrawer from '../../components/UiDrawer.vue'
 import UiInput from '../../components/UiInput.vue'
 import UiNotice from '../../components/UiNotice.vue'
 import UiToggle from '../../components/UiToggle.vue'
+import { useEditGuard } from '../../conflict'
 import { errorMessage, fieldMessage, generatePassword, policyText } from '../../format'
 import { notify, session } from '../../state'
 
@@ -21,6 +23,13 @@ const busy = ref(false)
 // a password made here, shown so that it can be given to the user
 const generated = ref('')
 const policy = computed(() => policyText(session.me?.password_policy))
+// another administrator saving this user meanwhile
+const guard = useEditGuard((user: User) => ({ username: user.username, full_name: user.full_name, disabled: user.disabled }), {
+  username: 'Username',
+  full_name: 'Full name',
+  disabled: 'Disabled',
+})
+const conflict = guard.conflict
 
 function generate() {
   generated.value = generatePassword(session.me?.password_policy)
@@ -47,6 +56,7 @@ watch(
     confirmPassword.value = ''
     generated.value = ''
     const user = props.user
+    guard.start(user)
     form.value = user
       ? { username: user.username, full_name: user.full_name, password: '', disabled: user.disabled }
       : { username: '', full_name: '', password: '', disabled: false }
@@ -61,24 +71,43 @@ async function save() {
     return
   }
   busy.value = true
+  let again = false
   try {
-    const user = props.user ? await api.updateUser(props.user.id, form.value) : await api.createUser(form.value)
+    const user = props.user
+      ? await api.updateUser(props.user.id, { ...form.value, version: guard.version.value })
+      : await api.createUser(form.value)
     notify(props.user ? `${user.username} saved.` : `${user.username} added.`)
     emit('saved', user)
   } catch (e) {
+    const { username, full_name, disabled } = form.value
+    const merged = guard.refused(e, { username, full_name, disabled })
+    if (merged) {
+      Object.assign(form.value, merged.values)
+      again = merged.again
+      return
+    }
     if (e instanceof ApiError && e.code === 'validation') {
       errors.value = e.fields
     }
     error.value = errorMessage(e)
   } finally {
     busy.value = false
+    // only what the form doesn't show changed meanwhile: saved again with the new version
+    if (again) {
+      save()
+    }
   }
+}
+
+function useTheirs() {
+  Object.assign(form.value, guard.useTheirs())
 }
 </script>
 
 <template>
   <UiDrawer :open="open" :title="user ? `Edit ${user.username}` : 'Add user'" @close="emit('close')">
     <form id="user-form" class="space-y-6" novalidate @submit.prevent="save">
+      <ConflictNotice :conflict="conflict" noun="user" @theirs="useTheirs" />
       <UiInput
         v-model="form.username"
         label="Username"

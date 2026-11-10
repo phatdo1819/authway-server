@@ -6,7 +6,7 @@
 #                                        new WireGuard servers, each one can have another
 #   AUTHWAY_UI_ADDRESS=192.168.1.10    the address of the host in the local network: the web UI only there (an IPv6
 #                                      address of the host works too, one address)
-#   AUTHWAY_VERSION=0.1.0+abc1234      what the web UI shows, to tell builds apart (the version of the source if empty)
+#   AUTHWAY_VERSION=0.2.0+abc1234      what the web UI shows, to tell builds apart (the version of the source if empty)
 #   TZ=Europe/Rome                     the time zone of the log and of the System page (UTC if empty)
 services:
   authway-server:

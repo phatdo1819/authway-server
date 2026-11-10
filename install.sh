@@ -13,8 +13,10 @@
 #   5. builds the image, or pulls a published one with --image
 #   6. starts it, waits until it's healthy, and prints the first administrator and what to do next
 #
-# Run again from a newer source, it upgrades: the data folder, .env and compose.override.yaml stay, and the database
-# is copied first to data/pre-upgrade-<date>. --uninstall stops and removes the containers, never the data.
+# Run again from a newer source, it upgrades: the data folder, .env and compose.override.yaml stay, the database is
+# copied first to data/pre-upgrade-<date>, and the image that ran is kept as authway-server:previous. --rollback goes
+# back to it, with the copy when the upgrade changed the schema of the database. --uninstall stops and removes the
+# containers, never the data.
 set -eu
 
 DIR=/opt/authway-server
@@ -29,6 +31,7 @@ REF=""
 YES=no
 INSTALL_DOCKER=yes
 UNINSTALL=no
+ROLLBACK=no
 
 # the versions it needs: IPv6 on the network of the container, and !reset in compose.macvlan.yaml
 DOCKER_MIN=27
@@ -48,15 +51,18 @@ Usage: sudo ./install.sh [options]
   --host-routes        turn on the routed servers through the Docker host (compose.host-routes.yaml)
   --no-host-routes     turn them off
   --dir DIR            the install folder: /opt/authway-server, or the folder of the Authway Server that runs
-  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.1.0
+  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.2.0
   --repo URL           get the source with git from there, when the script doesn't run from a copy of it
   --ref REF            the branch or tag of --repo
   --no-docker-install  stop instead of installing Docker when it's missing
   --uninstall          stop and remove the containers and the image; the install folder and its data stay
+  --rollback           go back to the version before the last upgrade, with the copy of the database made then when
+                       the upgrade changed its schema
   -y, --yes            ask nothing: what isn't given is found out, or left as it is
   -h, --help           this help
 
-Run again later from a newer source to upgrade: the data, .env and compose.override.yaml stay.
+Run again later from a newer source to upgrade: the data, .env and compose.override.yaml stay, the database is
+copied first, and --rollback goes back.
 EOF
 }
 
@@ -98,6 +104,7 @@ while [ $# -gt 0 ]; do
 	--ref=*) REF=${1#*=}; shift ;;
 	--no-docker-install) INSTALL_DOCKER=no; shift ;;
 	--uninstall) UNINSTALL=yes; shift ;;
+	--rollback) ROLLBACK=yes; shift ;;
 	-y | --yes) YES=yes; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "unknown option $1: ./install.sh --help" ;;
@@ -138,6 +145,38 @@ running_dir() {
 	docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' authway-server 2>/dev/null || true
 }
 
+# waits until Authway Server is healthy, or stops the script with the end of its log
+wait_healthy() {
+	status=""
+	for _ in $(seq 1 60); do
+		status=$(docker inspect -f '{{.State.Health.Status}}' authway-server 2>/dev/null || true)
+		[ "$status" = healthy ] && break
+		sleep 2
+	done
+	if [ "$status" != healthy ]; then
+		(cd "$DIR" && docker compose logs --tail 40 authway-server) >&2 || true
+		die "Authway Server isn't healthy after 2 minutes ($status): see its log above"
+	fi
+	info "${GREEN}Healthy${RESET}: $(docker logs authway-server 2>&1 | sed -n 's/.*msg=starting version=//p' | tail -1)"
+}
+
+# the schema of the database in a folder, read by an image while Authway Server is stopped: "" when it can't tell,
+# with an image older than the command for one
+db_schema() { # image folder
+	value=$(docker run --rm --network none -v "$2:/check" "$1" schema -data /check 2>/dev/null || true)
+	case $value in
+	'' | *[!0-9]*) echo "" ;;
+	*) echo "$value" ;;
+	esac
+}
+image_schema() { # image
+	value=$(docker run --rm --network none "$1" schema 2>/dev/null || true)
+	case $value in
+	'' | *[!0-9]*) echo "" ;;
+	*) echo "$value" ;;
+	esac
+}
+
 # ---- uninstall -------------------------------------------------------------------------------------------------
 
 if [ "$UNINSTALL" = yes ]; then
@@ -148,9 +187,53 @@ if [ "$UNINSTALL" = yes ]; then
 	confirm "Stop and remove the containers of Authway Server? The data stays in $DIR/data" || exit 0
 	# the named volume is only the folder in memory of the helper: the data is a folder, it stays
 	(cd "$DIR" && docker compose down --remove-orphans --volumes)
-	docker image rm authway-server:latest >/dev/null 2>&1 || true
+	docker image rm authway-server:latest authway-server:previous >/dev/null 2>&1 || true
 	info "Done. The configuration and the data stay in $DIR: delete the folder to remove them too, keys included."
 	info "Docker stays installed."
+	exit 0
+fi
+
+# ---- rollback --------------------------------------------------------------------------------------------------
+
+# back to the image kept by the last upgrade. The database stays when the upgrade didn't change its schema; else the
+# version of before can't open it, and the copy made before the upgrade goes back, the newer database aside
+if [ "$ROLLBACK" = yes ]; then
+	current=$(running_dir)
+	[ "$DIR_GIVEN" = yes ] || [ -z "$current" ] || DIR=$current
+	grep -qs "container_name: authway-server" "$DIR/compose.yaml" || die "no Authway Server in $DIR: give its folder with --dir"
+	docker image inspect authway-server:previous >/dev/null 2>&1 ||
+		die "no version of before: an upgrade with this script keeps it, as the image authway-server:previous"
+	copy=""
+	for folder in "$DIR"/data/pre-upgrade-*; do
+		[ -f "$folder/authway.db" ] && copy=$folder
+	done
+	[ -n "$copy" ] || die "no copy of the database in $DIR/data/pre-upgrade-*: an upgrade with this script makes one"
+	step "Going back to the version before the last upgrade"
+	info "The copy of the database made by the upgrade: $copy"
+	confirm "Stop Authway Server and start the version of before?" || exit 0
+	(cd "$DIR" && docker compose stop >/dev/null 2>&1) || true
+	now=$(db_schema authway-server:latest "$DIR/data")
+	before=$(db_schema authway-server:latest "$copy")
+	if [ -n "$now" ] && [ "$now" = "$before" ]; then
+		info "The upgrade didn't change the schema of the database ($now): it stays, with the changes made since."
+	else
+		aside=$DIR/data/pre-rollback-$(date +%Y%m%d-%H%M%S)
+		mkdir -p "$aside"
+		chmod 700 "$aside"
+		mv "$DIR"/data/authway.db* "$aside"/
+		cp -p "$copy"/authway.db* "$DIR"/data/
+		if [ -n "$now" ] && [ -n "$before" ]; then
+			info "The upgrade changed the schema of the database, $before → $now: the copy goes back."
+		else
+			info "Can't tell whether the upgrade changed the schema of the database: the copy goes back."
+		fi
+		info "The database of the newer version, with the changes made since the upgrade, is in $aside"
+	fi
+	docker tag authway-server:previous authway-server:latest
+	step "Starting the version of before"
+	(cd "$DIR" && docker compose up -d --no-build --remove-orphans)
+	wait_healthy
+	info "Done. To upgrade again: sudo ./install.sh from the newer source."
 	exit 0
 fi
 
@@ -497,6 +580,13 @@ info "Routed servers through the Docker host: $HOST_ROUTES"
 
 # ---- the image -------------------------------------------------------------------------------------------------
 
+if [ "$UPGRADE" = yes ]; then
+	# the image that runs now: --rollback goes back to it
+	previous=$(docker inspect -f '{{.Image}}' authway-server 2>/dev/null || true)
+	if [ -n "$previous" ] && docker tag "$previous" authway-server:previous; then
+		info "The version that runs now stays as the image authway-server:previous, for --rollback"
+	fi
+fi
 if [ -n "$IMAGE" ]; then
 	step "Pulling $IMAGE"
 	docker pull "$IMAGE"
@@ -522,21 +612,18 @@ if [ "$UPGRADE" = yes ]; then
 		rm -rf "$1"
 		shift
 	done
+	# a new schema: the new version changes the database as it starts, and the version of before can't open it then
+	from=$(db_schema authway-server:latest "$copy")
+	to=$(image_schema authway-server:latest)
+	if [ -n "$from" ] && [ -n "$to" ] && [ "$from" -lt "$to" ]; then
+		info "This version changes the schema of the database, $from → $to: the version of before can't open it then."
+		info "sudo ./install.sh --rollback goes back to that version with this copy."
+	fi
 fi
 
 step "Starting Authway Server"
 (cd "$DIR" && docker compose up -d --no-build --remove-orphans)
-status=""
-for _ in $(seq 1 60); do
-	status=$(docker inspect -f '{{.State.Health.Status}}' authway-server 2>/dev/null || true)
-	[ "$status" = healthy ] && break
-	sleep 2
-done
-if [ "$status" != healthy ]; then
-	(cd "$DIR" && docker compose logs --tail 40 authway-server) >&2 || true
-	die "Authway Server isn't healthy after 2 minutes ($status): see its log above"
-fi
-info "${GREEN}Healthy${RESET}: $(docker logs authway-server 2>&1 | sed -n 's/.*msg=starting version=//p' | tail -1)"
+wait_healthy
 if [ "$HOST_ROUTES" = yes ]; then
 	sleep 3
 	if docker exec authway-host-routes authway-server host-routes -health >/dev/null 2>&1; then
@@ -581,4 +668,5 @@ fi
 info ""
 info "Log:        cd $DIR && docker compose logs -f authway-server"
 info "Upgrade:    run this script again from a newer source"
+[ "$UPGRADE" = no ] || info "Go back:    ./install.sh --rollback, to the version before this upgrade"
 info "Uninstall:  ./install.sh --uninstall"

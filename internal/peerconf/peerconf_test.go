@@ -50,14 +50,27 @@ func TestEndpointAndNames(t *testing.T) {
 	if got := AllowedIPs(true, netip.MustParsePrefix("10.8.0.0/24"), netip.Prefix{}, []string{"192.168.1.0/24"}); strings.Join(got, ",") != "0.0.0.0/0" {
 		t.Error(got)
 	}
-	for name, want := range map[string]string{
-		"Office":                                 "Office.conf",
-		"Head office (Milan)":                    "Head-office-Milan.conf",
-		"...":                                    "wireguard.conf",
-		"a very long name of a server, too long": "a-very-long-name-of-a-server-too.conf",
+	for _, test := range []struct{ server, peer, want string }{
+		{"ABC", "test22", "ABC-test22.conf"},
+		{"Head office (Milan)", "Alice laptop", "Head-office-Milan-Alice-laptop.conf"},
+		{"...", "", "wireguard.conf"},
+		{"Office", "…", "Office.conf"},
+		{"???", "phone", "phone.conf"},
+		// at most 32: the longer name is cut, each keeps half of the room at least
+		{"Office", "a very long name of a peer, too long", "Office-a-very-long-name-of-a-pee.conf"},
+		{"a very long name of a server, too long", "phone", "a-very-long-name-of-a-serv-phone.conf"},
+		{"a very long name of a server", "a very long name of a peer", "a-very-long-nam-a-very-long-name.conf"},
+		{"a very long name of a server, too long", "", "a-very-long-name-of-a-server-too.conf"},
+		// no "-" or "." left where a name is cut
+		{"Office-.-x", "abcdefghijklmnopqrstuvwxyz", "Office-.-x-abcdefghijklmnopqrstu.conf"},
+		{"abcdefghijklmn. opqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz", "abcdefghijklmn-abcdefghijklmnopq.conf"},
 	} {
-		if got := FileName(name); got != want {
-			t.Errorf("%q: got %q, want %q", name, got, want)
+		got := FileName(test.server, test.peer)
+		if got != test.want {
+			t.Errorf("%q %q: got %q, want %q", test.server, test.peer, got, test.want)
+		}
+		if name := strings.TrimSuffix(got, ".conf"); len(name) > 32 {
+			t.Errorf("%q: longer than 32", got)
 		}
 	}
 	config := Config{PeerName: "two\nlines"}

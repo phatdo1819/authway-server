@@ -109,7 +109,7 @@ func TestAdminAPI(t *testing.T) {
 		t.Error("a private key reaches the web UI")
 	}
 	w, _ = c.do("GET", "/api/peers/1/config", "", true)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "PrivateKey = ") || !strings.Contains(w.Header().Get("Content-Disposition"), `filename=Office.conf`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "PrivateKey = ") || !strings.Contains(w.Header().Get("Content-Disposition"), `filename=Office-laptop.conf`) {
 		t.Fatalf("config: %d %s %v", w.Code, w.Body.String(), w.Header())
 	}
 	if w, _ := c.do("DELETE", "/api/peers/99", "", true); w.Code != 404 {

@@ -23,12 +23,13 @@ import (
 // with their keys, password hashes and authenticator secrets, sealed with a passphrase (internal/backup). The
 // history of the sessions, the events and the alerts aren't in it.
 
-// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 4 added
+// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 5 added
+// the access rules of the peers: an older Authway Server would let them reach all the networks of their server. 4 added
 // the routed servers: an older Authway Server would translate their networks again. 3 added the IPv6 networks of
 // the servers: an older Authway Server refuses the backup rather than lose them. 2 added
 // the devices, device binding and the traffic between peers: a backup of version 1 has neither, its peers enroll
 // a device when their server asks for one.
-const BackupVersion = 4
+const BackupVersion = 5
 
 var interfacePattern = regexp.MustCompile(`^wg[0-9]{1,3}$`)
 
@@ -143,6 +144,8 @@ type backupPeer struct {
 	Blocked      bool   `json:"blocked"`
 	CreatedAt    int64  `json:"created_at"`
 	UpdatedAt    int64  `json:"updated_at"`
+	// the access rules, since version 5: missing for all the networks of the server
+	Access []string `json:"access,omitempty"`
 }
 
 // BackupSummary says what a backup has, before it's restored.
@@ -302,7 +305,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 		content.Peers = append(content.Peers, backupPeer{
 			ID: p.ID, ServerID: p.ServerID, Name: p.Name, Enabled: p.Enabled, UserID: p.UserID, Address: p.Address,
 			PrivateKey: p.PrivateKey, PublicKey: p.PublicKey, PresharedKey: p.PresharedKey, RouteAll: p.RouteAll,
-			Blocked: p.Blocked, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+			Blocked: p.Blocked, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Access: p.Access,
 		})
 	}
 	devices, err := q.Devices()
@@ -681,6 +684,13 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 		case publicKeys[public.String()]:
 			return nil, badBackup("two peers have the keys of %s", short(name))
 		}
+		var access []string
+		if b.Access != nil {
+			var c checks
+			if access = checkAccess(&b.Access, nil, &server, &c); c.err() != nil {
+				return nil, badBackup("the access rules of the peer %s aren't valid", short(name))
+			}
+		}
 		used.names[strings.ToLower(name)] = true
 		used.addresses[address.String()] = true
 		if b.UserID != 0 {
@@ -692,7 +702,7 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 			ID: b.ID, ServerID: b.ServerID, Name: name, Enabled: b.Enabled, UserID: b.UserID,
 			Address: address.String(), PrivateKey: private.String(), PublicKey: public.String(),
 			PresharedKey: b.PresharedKey, RouteAll: b.RouteAll, Blocked: b.Blocked, CreatedAt: b.CreatedAt,
-			UpdatedAt: b.UpdatedAt,
+			UpdatedAt: b.UpdatedAt, Access: access,
 		})
 	}
 

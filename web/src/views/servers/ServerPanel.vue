@@ -89,6 +89,22 @@ function hostNote(route: Route): { text: string; warning: boolean } | null {
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
+// what a peer reaches when it's not just the networks of the server: all its traffic, only some of them
+function peerNotes(peer: Peer): string[] {
+  const notes: string[] = []
+  if (peer.route_all) {
+    notes.push('all traffic')
+  }
+  if (peer.access.length === 1) {
+    notes.push(`only ${peer.access[0]}`)
+  } else if (peer.access.length > 1) {
+    notes.push(`only ${peer.access.length} networks`)
+  }
+  return notes
+}
+function accessTitle(peer: Peer): string | undefined {
+  return peer.access.length ? `Reaches only ${peer.access.join(', ')}` : undefined
+}
 // the servers whose peers reach the peers of this one
 const reachedBy = computed(() =>
   props.servers.filter((server) => server.reachable_servers.includes(props.server.id)).map((server) => server.name),
@@ -498,11 +514,13 @@ async function copyKey() {
             <tr v-for="peer in filtered" :key="peer.id" :class="{ 'opacity-60': !peer.enabled }">
               <td class="px-4 py-3">
                 <p class="font-medium">{{ peer.name }}</p>
-                <p v-if="gated" class="text-slate-500 dark:text-slate-400">
+                <p v-if="gated" class="text-slate-500 dark:text-slate-400" :title="accessTitle(peer)">
                   <span :class="{ 'text-amber-700 dark:text-amber-400': !peer.username }">{{ peer.username || 'No user' }}</span>
-                  <span v-if="peer.route_all" class="ml-1">· all traffic</span>
+                  <span v-for="note in peerNotes(peer)" :key="note" class="ml-1">· {{ note }}</span>
                 </p>
-                <p v-else-if="peer.route_all" class="text-slate-500 dark:text-slate-400">All traffic</p>
+                <p v-else-if="peerNotes(peer).length" class="text-slate-500 dark:text-slate-400" :title="accessTitle(peer)">
+                  {{ capitalize(peerNotes(peer).join(' · ')) }}
+                </p>
               </td>
               <td class="px-4 py-3 font-mono whitespace-nowrap">
                 {{ peer.address }}
@@ -555,8 +573,15 @@ async function copyKey() {
                 </template>
               </td>
               <td class="px-4 py-3 whitespace-nowrap">
-                <p>{{ ago(peer.last_handshake) }}</p>
-                <p v-if="peer.endpoint" class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ peer.endpoint }}</p>
+                <template v-if="peer.last_handshake || !peer.last_seen">
+                  <p>{{ ago(peer.last_handshake) }}</p>
+                  <p v-if="peer.endpoint" class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ peer.endpoint }}</p>
+                </template>
+                <!-- WireGuard forgets the handshakes when the container starts again: the history doesn't -->
+                <template v-else>
+                  <p :title="`Last seen ${dateTime(peer.last_seen)}, in the connection history`">Seen {{ ago(peer.last_seen) }}</p>
+                  <p v-if="peer.last_endpoint" class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ peer.last_endpoint }}</p>
+                </template>
               </td>
               <td class="px-4 py-3 whitespace-nowrap text-slate-600 dark:text-slate-300">
                 ↓ {{ formatBytes(peer.received) }} · ↑ {{ formatBytes(peer.sent) }}

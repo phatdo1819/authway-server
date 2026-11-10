@@ -44,6 +44,8 @@ const (
 	// wrong passwords given by a session to change its own account: a session left open can't be used to find the
 	// password
 	maxPasswordFailures = 10
+	// the longest an import waits for the hashes of its passwords
+	importTime = 5 * time.Minute
 )
 
 // What a route needs of the administrator: anyone logged in, even before the setup of the account, or a role.
@@ -334,6 +336,19 @@ func (a *Admin) Handler() http.Handler {
 	})
 	// the configuration file has the private key of the peer
 	mux.Handle("GET /api/peers/{id}/config", a.authenticatedRaw(needOperator, a.peerConfig))
+	// users from a CSV file: checked, or imported whole
+	route("POST /api/import", needOperator, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		var input core.ImportInput
+		// a CSV file in a JSON string: its quotes and line breaks take two bytes each
+		if err := readJSONMax(r, &input, 2*core.MaxImportBytes+maxBody); err != nil {
+			return nil, err
+		}
+		if !input.Check {
+			// the passwords of hundreds of users take longer to hash than an answer usually waits
+			http.NewResponseController(w).SetWriteDeadline(time.Now().Add(importTime))
+		}
+		return a.core.Import(actor(who, r), input)
+	})
 
 	route("GET /api/users", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
 		return a.core.Users()
@@ -831,7 +846,12 @@ func (a *Admin) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var validation *core.ValidationError
 	var refused *core.RefusedError
 	var tooMany *tooManyError
+	var changedSince *core.ChangedError
 	switch {
+	case errors.As(err, &changedSince):
+		// saved by another administrator since the form opened: what it is now, for the form to show the changes
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "changed", "current": changedSince.Current,
+			"by": changedSince.By, "at": changedSince.At})
 	case errors.As(err, &validation):
 		body := map[string]any{"error": "validation", "fields": validation.Fields}
 		if validation.Detail != "" {

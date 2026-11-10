@@ -156,7 +156,7 @@ func TestRoutedServer(t *testing.T) {
 
 	before := f.snapshot()
 	data := f.sealed(adminID, func(c *backupContent) {
-		if c.Version != 4 || !c.Servers[0].Routed || !c.Servers[0].Inbound {
+		if c.Version < 4 || !c.Servers[0].Routed || !c.Servers[0].Inbound {
 			t.Fatalf("content: %d %+v", c.Version, c.Servers[0])
 		}
 	})

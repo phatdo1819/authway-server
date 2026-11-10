@@ -1,5 +1,5 @@
 # The image of Authway Server for amd64 and arm64, on the GitHub Container Registry of this repository:
-#   ghcr.io/phatdo1819/authway-server:0.1.0, :0.1 and :latest from a tag v0.1.0
+#   ghcr.io/phatdo1819/authway-server:0.2.0, :0.2 and :latest from a tag v0.2.0
 # The tag must be the version of cmd/authway-server/main.go. Run by hand, it builds without publishing.
 name: image
 

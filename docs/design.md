@@ -6,6 +6,11 @@
 
 - `internal/store`: the SQLite database (pure Go, no C compiler): administrators, users, servers, peers, their
   devices, sessions, connections, events. The schema changes are numbered migrations, see `PRAGMA user_version`.
+  Before it changes the schema of an existing database, `store.Open` copies it with `VACUUM INTO` to
+  `before-schema<N>-<UTC date>/authway.db` next to it (`Migrated` says it, and the log); a database of a newer schema
+  isn't opened at all. `authway-server schema [-data folder]` prints the schema of the version, or of the database in
+  the folder without changing it: `install.sh` uses it to say when an upgrade changes the schema, and for
+  `--rollback`.
 - `internal/core`: the checks, the changes, the logins and the sessions. Every change is applied at once: there is no
   configuration saved but not applied, so the gate always does what the database says.
 - `internal/network`: puts the configuration on the system. `Linux` uses the kernel WireGuard through wgctrl, `ip`
@@ -339,6 +344,37 @@ all its traffic through the tunnel routes, after the networks of its server, the
 linked to it, the ones it reaches and the ones that reach it: the answers come back through the tunnel too. The
 peers need their file again when the lists change.
 
+## Access rules of the peers
+
+A peer reaches all the networks of its server, or only those of its access rules (`peers.access`, schema 8: `''`
+for all of them, else a JSON list of networks, an address alone stored as `/32` or `/128`). Each rule is inside a
+network of the server (`access`: `outside`), they don't overlap (`overlap`), at most 32, and a list of blank lines is
+refused (`required`) rather than taken for all. `PUT /api/peers/{id}` without `access` keeps the rules, so an older
+web UI can't take them away; `"access": []` is all the networks. The server refuses networks that leave out part of
+a rule of one of its peers (`networks`: `in_peer_access`), and the firewall gets only the rules still inside the
+networks of the server: a peer with rules and none left reaches none, never all.
+
+In the chain of the server, after the traffic between peers and before the rules of all its peers, for each version:
+
+```
+ip saddr <peer> ip daddr { <its rules> } accept                                   one line per peer with rules
+ip saddr { <peers with rules> } ip daddr { <DNS servers> } meta l4proto { tcp, udp } th dport 53 accept
+ip saddr { <peers with rules> } ip daddr { <networks of the server> } drop
+ip saddr { <peers with rules> } ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+```
+
+(`fc00::/7, fe80::/10` for IPv6). What's left, the internet, follows the rules of every peer: accepted only with
+`route_all`. So a peer with rules that sends all its traffic reaches the internet, but not the networks of the
+Docker host, the Docker networks or the host behind them. The DNS servers of the server stay reachable on port 53,
+wherever they are, since the configuration file names them. On a routed server with `inbound`, before the rule of
+its networks: `iifname != "wg*" oifname "<wg>" ct direction original ip daddr <peer> ip saddr { <its rules> }
+accept` for each peer with rules, then `ip daddr { <peers with rules> }` dropped. The translation doesn't change:
+NAT and routed work the same. Every packet goes through these rules, so a change cuts the connections already open.
+
+The configuration file of a peer with rules that doesn't send all its traffic routes its rules, and the DNS servers
+of the server that are inside the networks of the server but not inside its rules, instead of the networks of the
+server.
+
 ## Connection history
 
 WireGuard has no connections and no hooks when a peer comes or goes. Every minute (`RecordInterval`) the server reads
@@ -411,6 +447,65 @@ it in, and checks what is typed with the rules of the API (`web/src/addresses.ts
 `freeAddress`): in the network, not its first or last address, not the address of the server, not the address of
 another peer. The API checks again, and answers `invalid` or `taken`.
 
+A peer is `connected` (`connectedLocked`) while its latest handshake is younger than `ConnectedWindow`, 3 minutes,
+and, when its server has a keepalive, while it sent something within two keepalives and a tick (`activeWindow`, 55
+seconds with 25): each `Tick` notes when its received counter grew (`followActivityLocked`), a handshake counting
+too. WireGuard makes a handshake only every 2 minutes, so the handshake alone shows a device gone after up to 3
+minutes; the keepalive shows it within a minute. A peer seen for the first time, or whose counters start again with
+its interface, last sent at its handshake. The connection history and the sessions keep their own rules.
+
+WireGuard keeps the handshakes in the interfaces, and the container starting again makes them new. A peer without a
+handshake since gets `last_seen` and `last_endpoint` in its view, from its latest row in `connections`
+(`LatestConnections`): only a row of its server that started after the peer was made, since a new peer can take the
+id of a deleted one.
+
+### Two administrators at once
+
+The users, the peers, the servers and the administrators count the changes made to them (`version`, from 1, and
+`updated_by`, the administrator who made the latest; schema 9). Their views have both. Every update that an
+administrator makes adds one (`UPDATE ... version = version + 1 RETURNING version`): the forms, an authenticator set
+up or removed, new keys for a peer, a server taken out of the lists of the others when it's deleted. What the system
+changes by itself, a peer blocked after a copy say, doesn't count.
+
+A form sends the version it opened with (`version` in `UserInput`, `PeerInput`, `ServerInput`, `AdminInput`). When it
+isn't the one of now, nothing is saved: `409 {"error": "changed", "current": <the view of now>, "by", "at"}`
+(`ChangedError`). The form then compares, field by field (`web/src/conflict.ts`), what it opened with, what is typed
+and what was saved meanwhile: the fields that only the other administrator changed take their values, the ones that
+only this one changed keep theirs, and the ones both changed keep what is typed and are named, with *Use theirs
+instead*. A notice says who saved, when, and what; the next save sends the new version. When only what the form
+doesn't show changed (an authenticator, new keys), it saves again at once. Without a version (`0`), nothing is
+checked, as before: a client of the API that doesn't know it.
+
+A user's password is hashed out of the lock; the update then reads the user again, so an authenticator set up during
+the hash stays. A deletion has no version: the next save of a form opened before answers `404`.
+
+### Import
+
+`POST /api/import` `{csv, check, skip_existing}` adds users from a CSV file (`internal/core/import.go`), an Operator or an
+Administrator: each row a user, as `POST /api/users` makes it, enabled. The peers are given to them afterwards, on
+their servers. The header names the columns, in any case, with spaces or dashes: `username` (or `user`), `full_name`
+(or `fullname`, `display_name`, `name`) and `password`; any other name is refused, so a mistyped password column can't
+make the server choose the passwords without a word. The separator is the one the header has most of: a comma, a
+semicolon or a tab. A UTF-8 byte order mark is skipped, the empty rows too; at most 500 rows and 512 KB.
+
+Each row is checked as the form is (`planImportLocked`), and against the users there and the rows before it: a
+username already there is `taken` (without regard to case, as in the database: an import adds users, it never changes
+one), twice in the file `twice`. A password follows the policy; without one, the server makes one (`newPassword`: 16
+characters at least, the policy followed, never a symbol first, since a spreadsheet reads `=`, `+` or `-` first as a
+formula). The answer has each row, `ImportRow`, with its errors by column.
+
+With `skip_existing`, a row whose user is already there is `skipped` instead of `taken`, whatever its other cells
+say: that user doesn't change, its password neither, and it gets no event. The rows that add a user are checked as
+always: an error among them still stops the import. `users` counts the users added, `skipped` the rows skipped; a file
+of users that are all there adds nothing.
+
+With `check`, or a row in error, nothing is added: `{rows, users, skipped, invalid, imported: false}`. Else the
+passwords are hashed out of the lock, then the file is checked again under it (another administrator may have added
+or deleted a user meanwhile: errors again and nothing added, or a row skipped no more), and the users are added in
+one transaction, each a `user_added` event with the detail `imported`. The answer adds `passwords`, the ones the server
+made: the only time they're seen. The hashes of hundreds of passwords may take longer than the 60 seconds an answer
+of the web UI may take: that route waits up to 5 minutes (200 take 6 seconds on a small ARM host).
+
 ### Roles
 
 | | Administrator | Operator | Read-only |
@@ -482,12 +577,14 @@ or ended, by the time they started; the alerts and the events by their time.
 
 A backup (`internal/core/backup.go`) has the whole configuration: the settings, the administrators, the users, the
 servers and the peers, with their keys, password hashes and authenticator secrets, the devices and the keys they gave
-their peers, and their ids. Not the history of the sessions and of the connections, the events, the alerts or the
-certificate of the web UI. The content is JSON with its own version (`BackupVersion`, 2 since the devices, 3 since the
-IPv6 networks, 4 since the routed servers); a restore takes that version and the older ones, and refuses a newer one:
-an older Authway Server refuses a backup with IPv6 networks rather than lose them, or with routed servers rather than
-translate them. A backup of version 1 has no device: the peers of the servers with binding enroll one at their next
-login. One of version 1 or 2 has no IPv6 network, one of version 1 to 3 no routed server.
+their peers, and their ids. Not the history of the sessions and of the connections, the events, the alerts, the
+certificate of the web UI, or the count of the changes (`version`, `updated_by`): it starts again at 1, and the
+restore logs every administrator out, their forms with them. The content is JSON with its own version (`BackupVersion`, 2 since the devices, 3 since the
+IPv6 networks, 4 since the routed servers, 5 since the access rules of the peers); a restore takes that version and
+the older ones, and refuses a newer one: an older Authway Server refuses a backup with IPv6 networks rather than lose
+them, with routed servers rather than translate them, or with access rules rather than open all the networks to the
+peers. A backup of version 1 has no device: the peers of the servers with binding enroll one at their next login. One
+of version 1 or 2 has no IPv6 network, one of version 1 to 3 no routed server, one of version 1 to 4 no access rule.
 
 The file (`internal/backup`) is JSON too: a header in clear (`format`, `version`, `created_at`, the parameters of the
 key, `cipher`, `nonce`) and `data`, the content encrypted with AES-256-GCM. The key comes from the passphrase through
@@ -524,6 +621,12 @@ opened before the restore never runs as the administrator that has its id now.
 
 `internal/system` reads the host through a probe: `/proc` and `/sys` on Linux, made-up values elsewhere (the page
 says so), to try the web UI on a computer without Linux.
+
+The page has five tabs (`web/src/views/SystemView.vue`), the one open in the address (`?tab=history`): Overview (the
+checks and a summary), History, Network (the interfaces), Host (the disks, the host, Authway Server) and Log. The
+snapshot is read every 5 seconds whatever the tab; the history and the log only while their tab is open, and a tab
+opened again asks the points it missed. A dot on Overview, and on Log for the errors of the log, says a check isn't
+right.
 
 - **Every 5 seconds** the monitor reads the counters: the ticks of the processors (`/proc/stat`), the memory
   (`MemTotal`, `MemAvailable`), the bytes of each interface (`/proc/net/dev`, the network of the container), and what

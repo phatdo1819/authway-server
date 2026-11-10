@@ -17,7 +17,7 @@ COPY internal ./internal
 COPY --from=ui /src/internal/admin/ui/dist ./internal/admin/ui/dist
 ARG TARGETOS
 ARG TARGETARCH
-# empty: the version of the source, in cmd/authway-server/main.go. Set it to tell builds apart: 0.1.0+abc1234
+# empty: the version of the source, in cmd/authway-server/main.go. Set it to tell builds apart: 0.2.0+abc1234
 ARG VERSION=
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w ${VERSION:+-X main.version=$VERSION}" -o /out/authway-server ./cmd/authway-server
