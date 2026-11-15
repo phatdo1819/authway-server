@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/phatdo1819/authway-server/internal/secret"
@@ -130,7 +129,7 @@ func (s *Service) Import(by Actor, input ImportInput) (*ImportResult, error) {
 		}
 		return made[key]
 	}
-	// the hashes take time: out of the lock, as many at once as the hash allows
+	// the hashes take time: out of the lock, one at a time
 	passwords := map[string]string{}
 	for index, row := range plan.rows {
 		if !row.Skipped {
@@ -362,28 +361,20 @@ func (s *Service) planImportLocked(lines []importLine, skipExisting bool) (*impo
 	return plan, nil
 }
 
-// hashAll hashes passwords, by key: the hash runs two at a time, the others wait their turn.
+// hashAll hashes passwords, by key, one at a time, taking turns with the logins of the web UI: the other slot of the
+// hash stays for the logins of the VPN, which would otherwise wait for the whole import.
 func hashAll(passwords map[string]string) (map[string]string, error) {
-	var wait sync.WaitGroup
-	var mu sync.Mutex
 	hashes := make(map[string]string, len(passwords))
-	var failed error
 	for key, password := range passwords {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			hash, err := secret.HashPassword(password)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				failed = err
-				return
-			}
-			hashes[key] = hash
-		}()
+		var hash string
+		var err error
+		secret.Shared(nil, func() { hash, err = secret.HashPassword(password) })
+		if err != nil {
+			return nil, err
+		}
+		hashes[key] = hash
 	}
-	wait.Wait()
-	return hashes, failed
+	return hashes, nil
 }
 
 // newPassword makes a password that follows the policy: 16 characters at least, easy to read and to type, with a

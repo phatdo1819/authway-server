@@ -1,16 +1,33 @@
 import { reactive } from 'vue'
 
-import { api, type Me } from './api'
+import { api, ApiError, type Me } from './api'
+import { errorMessage } from './format'
 
-// the administrator logged in, null when nobody is
-export const session = reactive<{ me: Me | null; checked: boolean }>({ me: null, checked: false })
+// the administrator logged in, null when nobody is. error: why the session couldn't be checked, the server didn't
+// answer say; '' when it answered
+export const session = reactive<{ me: Me | null; checked: boolean; error: string }>({ me: null, checked: false, error: '' })
 
+// checkSession asks the server who is logged in. Only its answer that nobody is logs out: when it can't answer, it's
+// asked twice more, then the administrator of before stays, and error says why.
 export async function checkSession(force = false): Promise<boolean> {
   if (!session.checked || force) {
-    try {
-      session.me = await api.me()
-    } catch {
-      session.me = null
+    for (let attempt = 1; ; attempt++) {
+      try {
+        session.me = await api.me()
+        session.error = ''
+        break
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          session.me = null
+          session.error = ''
+          break
+        }
+        if (attempt >= 3) {
+          session.error = errorMessage(e)
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
+      }
     }
     session.checked = true
   }

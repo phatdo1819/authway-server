@@ -2,12 +2,12 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api, type TotpSetup, type User } from '../api'
-import UiBadge from '../components/UiBadge.vue'
 import UiButton from '../components/UiButton.vue'
 import UiEmpty from '../components/UiEmpty.vue'
 import UiMenu, { type MenuItem } from '../components/UiMenu.vue'
 import UiNotice from '../components/UiNotice.vue'
-import { errorMessage } from '../format'
+import UiStatus from '../components/UiStatus.vue'
+import { dateTime, errorMessage } from '../format'
 import { canManage, confirm, notify } from '../state'
 import ImportModal from './users/ImportModal.vue'
 import TotpModal from './users/TotpModal.vue'
@@ -56,16 +56,41 @@ async function saved() {
   await load()
 }
 
+// the authenticator of a user: none, a key nobody has used yet, or one in use
+type TotpState = 'none' | 'waiting' | 'in_use'
+function totpState(user: User): TotpState {
+  if (!user.totp) {
+    return 'none'
+  }
+  return user.totp_confirmed_at ? 'in_use' : 'waiting'
+}
+
+const totpAction: Record<TotpState, string> = {
+  none: 'Set up authenticator',
+  waiting: 'Show a new QR code',
+  in_use: 'Replace authenticator',
+}
+
 async function setupTotp(user: User) {
-  if (user.totp) {
-    const ok = await confirm(
-      `New authenticator for ${user.username}?`,
-      'The codes of the current authenticator stop working, and the user is logged out.',
-      'Set up again',
+  const state = totpState(user)
+  let ok = true
+  if (state === 'waiting') {
+    // nobody has shown a code of it: most likely never scanned, nothing to lose
+    ok = await confirm(
+      `New QR code for ${user.username}?`,
+      "No code from the current QR code has been used yet. If the user did scan it, they'll need to scan the new one instead.",
+      'Show new QR code',
+      false,
     )
-    if (!ok) {
-      return
-    }
+  } else if (state === 'in_use') {
+    ok = await confirm(
+      `Replace the authenticator of ${user.username}?`,
+      'This user already logs in with codes from this app. Those codes will stop working and the user will be logged out. They need to scan the new QR code before they can log in again.',
+      'Replace',
+    )
+  }
+  if (!ok) {
+    return
   }
   try {
     totp.value = { user, setup: await api.setupTotp(user.id) }
@@ -78,7 +103,7 @@ async function setupTotp(user: User) {
 function menu(user: User): MenuItem[] {
   const items: MenuItem[] = [
     { label: 'Edit', icon: 'edit', action: () => edit(user) },
-    { label: user.totp ? 'New authenticator' : 'Set up authenticator', icon: 'shield', action: () => setupTotp(user) },
+    { label: totpAction[totpState(user)], icon: 'shield', action: () => setupTotp(user) },
   ]
   if (user.totp) {
     items.push({
@@ -87,7 +112,7 @@ function menu(user: User): MenuItem[] {
       action: async () => {
         const ok = await confirm(
           `Remove the authenticator of ${user.username}?`,
-          "On the servers that ask for a code, the user can't log in until a new authenticator is set up.",
+          "On servers that require a code, this user can't log in until a new authenticator is set up.",
           'Remove',
         )
         if (ok) {
@@ -108,7 +133,7 @@ function menu(user: User): MenuItem[] {
     danger: true,
     action: async () => {
       const peers = user.peers.length
-        ? `\n\nIts peers are deleted too, and their configuration files stop working:\n${user.peers.join('\n')}`
+        ? `\n\nTheir peers will also be deleted, and those configuration files will stop working:\n${user.peers.join('\n')}`
         : ''
       const ok = await confirm(`Delete ${user.username}?`, `This can't be undone.${peers}`, 'Delete user')
       if (ok) {
@@ -132,7 +157,7 @@ function menu(user: User): MenuItem[] {
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Users</h1>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          The people who log in on the servers with login. Each user has at most one peer on each server.
+          People who log in to the VPN on servers that require a login. Each user can have one peer per server.
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
@@ -155,8 +180,8 @@ function menu(user: User): MenuItem[] {
       v-else-if="!users.length && !error"
       class="mt-8"
       icon="users"
-      title="No user yet"
-      text="Add the users, then give each one a peer on the servers they use. Many at once: Import, from a CSV file."
+      title="No users yet"
+      text="Add your users, then give each one a peer on the servers they use. To add many at once, use Import with a CSV file."
     />
     <div
       v-else-if="users.length"
@@ -179,7 +204,23 @@ function menu(user: User): MenuItem[] {
               <p v-if="user.full_name" class="text-slate-500 dark:text-slate-400">{{ user.full_name }}</p>
             </td>
             <td class="px-4 py-3">
-              <UiBadge :tone="user.totp ? 'green' : 'gray'">{{ user.totp ? 'Set up' : 'None' }}</UiBadge>
+              <div class="flex flex-col items-start gap-1">
+                <UiStatus v-if="totpState(user) === 'in_use'" tone="green" :hint="`First code ${dateTime(user.totp_confirmed_at)}`">
+                  In use
+                </UiStatus>
+                <UiStatus v-else-if="totpState(user) === 'waiting'" tone="amber" hint="No code used yet">
+                  Waiting for first code
+                </UiStatus>
+                <UiStatus v-else tone="gray">None</UiStatus>
+                <button
+                  v-if="canManage() && totpState(user) !== 'in_use'"
+                  type="button"
+                  class="pl-4 text-xs font-medium text-sky-700 hover:underline focus-visible:underline focus-visible:outline-none dark:text-sky-400"
+                  @click="setupTotp(user)"
+                >
+                  {{ totpState(user) === 'none' ? 'Set up' : 'Show a new QR code' }}
+                </button>
+              </div>
             </td>
             <td class="px-4 py-3 text-slate-600 dark:text-slate-300">
               <span v-if="!user.peers.length" class="text-slate-400">—</span>
@@ -188,25 +229,23 @@ function menu(user: User): MenuItem[] {
               </ul>
             </td>
             <td class="px-4 py-3">
-              <div class="flex flex-wrap gap-1.5">
-                <UiBadge v-if="user.disabled" tone="red">Disabled</UiBadge>
-                <UiBadge v-else-if="user.sessions" tone="sky">Logged in</UiBadge>
-                <UiBadge v-else tone="gray">Active</UiBadge>
-              </div>
+              <UiStatus v-if="user.disabled" tone="red">Disabled</UiStatus>
+              <UiStatus v-else-if="user.sessions" tone="sky">Logged in</UiStatus>
+              <UiStatus v-else tone="green">Active</UiStatus>
             </td>
             <td class="px-4 py-3 text-right">
               <UiMenu v-if="canManage()" :items="menu(user)" :label="`Actions of ${user.username}`" />
             </td>
           </tr>
           <tr v-if="!filtered.length">
-            <td colspan="5" class="px-4 py-6 text-center text-slate-500">No user matches "{{ search }}".</td>
+            <td colspan="5" class="px-4 py-6 text-center text-slate-500">No users match "{{ search }}".</td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <UserDrawer :open="drawerOpen" :user="editing" @close="drawerOpen = false" @saved="saved" />
-    <TotpModal :data="totp" @close="totp = null" />
+    <TotpModal :data="totp" @close="totp = null" @checked="load" />
     <ImportModal :open="importing" @close="importing = false" @imported="load" />
   </div>
 </template>

@@ -40,6 +40,34 @@ function parseTunnel(cidr: string): Tunnel | null {
   return { network, broadcast: network + size - 1, cidr: `${formatIPv4(network)}/${length}` }
 }
 
+// networkOf is an IPv4 network without its host part, 192.168.1.0/24 for 192.168.1.7/24, or '' when the text isn't
+// one: an IPv6 network for example
+export function networkOf(cidr: string): string {
+  return parseTunnel(cidr.trim())?.cidr ?? ''
+}
+
+// anyAddressOf writes any address of an IPv4 network. With a length of /8, /16 or /24, x for the numbers that change
+// in it: 192.168.1.x for 192.168.1.0/24. Else one address of it, the one offset from its start: 10.0.16.2 for
+// 10.0.16.0/20 with offset 2, as 10.0.x.x would read the same for 10.0.32.0/20. '' when the text isn't an IPv4 network.
+export function anyAddressOf(cidr: string, offset = 2): string {
+  const tunnel = parseTunnel(cidr.trim())
+  if (!tunnel) {
+    return ''
+  }
+  const [address = '', bits = ''] = tunnel.cidr.split('/')
+  const length = Number(bits)
+  if (length % 8 === 0 && length > 0 && length < 32) {
+    const kept = length / 8
+    return address
+      .split('.')
+      .map((part, index) => (index < kept ? part : 'x'))
+      .join('.')
+  }
+  // inside the network, before its broadcast address when it's that small
+  const last = Math.max(tunnel.network, tunnel.broadcast - 1)
+  return formatIPv4(Math.min(tunnel.network + offset, last))
+}
+
 // nextFreeAddress is the first address of the network that no peer has, as the server chooses it, or '' when the
 // network is full
 export function nextFreeAddress(cidr: string, used: string[]): string {

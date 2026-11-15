@@ -27,13 +27,14 @@ function list(labels: string[]): string {
 <template>
   <UiNotice v-if="conflict" tone="warning" :title="`${who} saved this ${noun} while you had it open`">
     <div class="space-y-2">
-      <p :title="dateTime(conflict.at)">Saved {{ ago(conflict.at) }}. Nothing of yours is saved yet.</p>
+      <p :title="dateTime(conflict.at)">Saved {{ ago(conflict.at) }}. None of your changes are saved yet.</p>
       <p v-if="conflict.taken.length">
-        Their changes are in the form now: <strong>{{ list(conflict.taken) }}</strong>. What you changed stays.
+        The form now includes their changes to <strong>{{ list(conflict.taken) }}</strong>. Your own changes are kept.
       </p>
       <template v-if="conflict.both.length">
         <p>
-          You both changed <strong>{{ list(conflict.both) }}</strong>: the form keeps yours, and saving replaces theirs.
+          You both changed <strong>{{ list(conflict.both) }}</strong>. The form keeps your version, and saving will
+          replace theirs.
         </p>
         <UiButton size="sm" @click="emit('theirs')">Use theirs instead</UiButton>
       </template>

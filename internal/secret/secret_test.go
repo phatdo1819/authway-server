@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+// The hashes that aren't logins of the VPN take turns: one waits while another runs, and gives up when done closes.
+func TestShared(t *testing.T) {
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	go Shared(nil, func() {
+		close(inside)
+		<-release
+	})
+	<-inside
+	done := make(chan struct{})
+	close(done)
+	if Shared(done, func() { t.Error("ran while the slot was taken") }) {
+		t.Fatal("Shared returned true without its turn")
+	}
+	close(release)
+	ran := false
+	if !Shared(nil, func() { ran = true }) || !ran {
+		t.Fatal("the turn never came")
+	}
+}
+
 func TestPassword(t *testing.T) {
 	hash, err := HashPassword("Secret,1234")
 	if err != nil {

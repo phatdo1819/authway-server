@@ -215,8 +215,8 @@ onBeforeUnmount(() => {
 
 async function end(session: Session) {
   const ok = await confirm(
-    `End the session of ${session.username}?`,
-    `The traffic of ${session.peer_name} stops until ${session.username} logs in again.`,
+    `End ${session.username}'s session?`,
+    `Traffic from ${session.peer_name} stops until ${session.username} logs in again.`,
     'End session',
   )
   if (!ok) {
@@ -233,8 +233,8 @@ async function end(session: Session) {
 
 async function clearAlerts(alert: Alert) {
   const ok = await confirm(
-    `Clear the alerts of ${alert.peer_name}?`,
-    alert.blocked ? 'The peer is unblocked: its user can log in again.' : 'They are deleted.',
+    `Clear alerts for ${alert.peer_name}?`,
+    alert.blocked ? 'The peer will be unblocked, and its user can log in again.' : 'The alerts will be deleted.',
     alert.blocked ? 'Clear and unblock' : 'Clear',
     false,
   )
@@ -276,9 +276,9 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
   <div class="mx-auto max-w-7xl">
     <h1 class="text-2xl font-semibold tracking-tight">Activity</h1>
     <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-      The sessions of the servers with login, the connections of all the peers, the alerts, and what happened: the
-      logins, and every change made in the web UI, by whom. The newest are on top.
-      {{ historyDays ? `The history keeps ${historyDays} ${historyDays === 1 ? 'day' : 'days'} (Settings).` : '' }}
+      Login sessions, peer connections, alerts, and a log of logins and every change made in the web UI, with who made
+      it. Newest first.
+      {{ historyDays ? `History is kept for ${historyDays} ${historyDays === 1 ? 'day' : 'days'} (see Settings).` : '' }}
     </p>
 
     <UiNotice v-if="error" tone="error" class="mt-6">{{ error }}</UiNotice>
@@ -342,11 +342,11 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
     </form>
     <p v-if="backwards" class="mt-2 text-sm text-amber-700 dark:text-amber-400">The end date is before the start date.</p>
     <p v-if="tab === 'connections'" class="mt-3 text-sm text-slate-500 dark:text-slate-400">
-      A connection is a run of handshakes from one public IP: WireGuard has none of its own. The times are precise to the
-      minute. The dates find the connections that overlap them.
+      WireGuard has no connections of its own, so a connection here is a series of handshakes from one public IP. Times
+      are accurate to the minute. Date filters include connections that overlap the dates.
     </p>
     <p v-else-if="paged" class="mt-3 text-sm text-slate-500 dark:text-slate-400">
-      The CSV file has every row that matches the filters, not only this page.
+      The CSV file includes every row that matches the filters, not just this page.
     </p>
 
     <div class="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -378,7 +378,7 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
                 <template v-if="tab === 'sessions'">
                   {{ dateTime(session.expires_at) }}
                   <p v-if="session.paused_at" class="text-xs text-amber-700 dark:text-amber-300">
-                    Paused since {{ dateTime(session.paused_at) }}: another public IP
+                    Paused since {{ dateTime(session.paused_at) }}: connecting from a different IP
                   </p>
                 </template>
                 <template v-else>
@@ -392,7 +392,7 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
             </tr>
             <tr v-if="!(tab === 'sessions' ? shownSessions : history).length">
               <td colspan="6" class="px-4 py-8 text-center text-slate-500">
-                {{ filtered ? 'Nothing matches the filters.' : tab === 'sessions' ? 'Nobody is logged in.' : 'No session ended yet.' }}
+                {{ filtered ? 'Nothing matches the filters.' : tab === 'sessions' ? 'No one is logged in.' : 'No sessions have ended yet.' }}
               </td>
             </tr>
           </tbody>
@@ -431,7 +431,7 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
             </tr>
             <tr v-if="!connections.length">
               <td colspan="6" class="px-4 py-8 text-center text-slate-500">
-                {{ filtered ? 'Nothing matches the filters.' : 'No connection yet.' }}
+                {{ filtered ? 'Nothing matches the filters.' : 'No connections yet.' }}
               </td>
             </tr>
           </tbody>
@@ -469,7 +469,7 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
               </td>
             </tr>
             <tr v-if="!shownAlerts.length">
-              <td colspan="6" class="px-4 py-8 text-center text-slate-500">{{ filtered ? 'Nothing matches the filters.' : 'No alert.' }}</td>
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500">{{ filtered ? 'Nothing matches the filters.' : 'No alerts.' }}</td>
             </tr>
           </tbody>
         </table>

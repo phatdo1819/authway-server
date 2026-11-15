@@ -26,6 +26,23 @@ const (
 // at most two checks at once: each one takes 64 MiB
 var slots = make(chan struct{}, 2)
 
+// the hashes that aren't logins of the VPN, the logins of the web UI and the imports, take turns at one of the two
+// slots: however many there are, the other slot stays for the VPN
+var shared = make(chan struct{}, 1)
+
+// Shared runs fn once the turn of the hashes that aren't logins of the VPN comes, or returns false without running it
+// when done closes first. Nothing that fn waits for may wait for Shared.
+func Shared(done <-chan struct{}, fn func()) bool {
+	select {
+	case shared <- struct{}{}:
+	case <-done:
+		return false
+	}
+	defer func() { <-shared }()
+	fn()
+	return true
+}
+
 var b64 = base64.RawStdEncoding
 
 // HashPassword returns the argon2id hash of a password in the PHC string format.

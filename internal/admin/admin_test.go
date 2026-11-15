@@ -129,6 +129,40 @@ func TestAdminAPI(t *testing.T) {
 	}
 }
 
+// Behind a trusted reverse proxy, the address of the browser is the nearest one it forwards, and the cookie follows
+// the HTTPS of the browser. From anyone else, the headers are ignored.
+func TestTrustedProxies(t *testing.T) {
+	a := &Admin{proxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24"), netip.MustParsePrefix("192.0.2.1/32")}}
+	request := func(remote string, headers ...string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		for index := 0; index+1 < len(headers); index += 2 {
+			r.Header.Add(headers[index], headers[index+1])
+		}
+		return r
+	}
+	for _, test := range []struct {
+		r      *http.Request
+		client string
+		secure bool
+	}{
+		{request("198.51.100.7:4000", "X-Forwarded-For", "203.0.113.9", "X-Forwarded-Proto", "https"), "198.51.100.7", false},
+		{request("10.0.0.5:4000"), "10.0.0.5", false},
+		{request("10.0.0.5:4000", "X-Forwarded-For", "203.0.113.9", "X-Forwarded-Proto", "https"), "203.0.113.9", true},
+		{request("10.0.0.5:4000", "X-Forwarded-For", "1.1.1.1, 203.0.113.9, 192.0.2.1", "X-Forwarded-Proto", "http"), "203.0.113.9", false},
+		{request("10.0.0.5:4000", "X-Forwarded-For", "1.1.1.1", "X-Forwarded-For", "203.0.113.9"), "203.0.113.9", false},
+		{request("10.0.0.5:4000", "X-Forwarded-For", "203.0.113.9, junk"), "10.0.0.5", false},
+		{request("[::ffff:10.0.0.5]:4000", "X-Forwarded-For", "2001:db8::1", "X-Forwarded-Proto", "HTTPS"), "2001:db8::1", true},
+	} {
+		if got := a.client(test.r); got.String() != test.client {
+			t.Errorf("%s %v: client %s, want %s", test.r.RemoteAddr, test.r.Header, got, test.client)
+		}
+		if got := a.secureFor(test.r); got != test.secure {
+			t.Errorf("%s %v: secure %v, want %v", test.r.RemoteAddr, test.r.Header, got, test.secure)
+		}
+	}
+}
+
 // the failed logins count by network: the addresses of one IPv6 /64 are one
 func TestFailureKey(t *testing.T) {
 	for address, key := range map[string]string{

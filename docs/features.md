@@ -38,9 +38,9 @@
 A WireGuard configuration file is a key: anyone with a copy connects. With a login a copy alone isn't enough, and each
 server can add more:
 
-- **The lock of the session to the public IP of the login.** *Strict*: while the peer sends from another IP, the
-  session pauses and the peer is out; it resumes when the IP of the login comes back, and ends after 5 minutes.
-  *Roaming*: the session follows the device to its new network. *Off*.
+- **The lock of the session to the public IP of the login**, on by default: while the peer sends from another IP,
+  the session pauses and the peer is out; it resumes when the IP of the login comes back, and ends after 5 minutes.
+  Turned off, the session follows the device to its new network.
 - **Two devices with the same key**: the endpoint of the peer keeps switching between their public IPs. The session
   ends and an alert is recorded; optionally the peer is blocked until an administrator clears its alerts or gives it
   new keys.
@@ -85,6 +85,8 @@ server can add more:
   the sessions and the alerts, not the servers, the administrators or the settings) or **Read-only**. Each one can
   log in with an authenticator app too, and the settings can require it of everybody. A password given by someone
   else is changed at the first login.
+- **Remember this device**: an administrator who enters a code can tick it, and that browser then needs only the
+  password for 30 days (0 to 90 in Settings, 0 turns it off). A new password or authenticator ends it early.
 - **A password policy** for the users and the administrators: minimum length, lowercase, uppercase, digit, symbol,
   never the username.
 - **Two administrators at once**: a form saved over a change that another administrator made since it opened is

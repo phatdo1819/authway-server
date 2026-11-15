@@ -242,6 +242,7 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loadUsedCodesLocked()
 	if err := s.checkSessionsLocked(EndServerChanged); err != nil {
 		return nil, err
 	}

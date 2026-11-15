@@ -199,9 +199,9 @@ const kindLabels: Record<SystemInterface['kind'], string> = {
 const skewText = computed(() => {
   const seconds = Math.abs(skew.value)
   if (seconds < 2) {
-    return 'The clock of the server and the one of this computer agree.'
+    return "The server's clock matches this computer's clock."
   }
-  return `The clock of the server is ${seconds} s ${skew.value > 0 ? 'ahead of' : 'behind'} the one of this computer.`
+  return `The server's clock is ${seconds} s ${skew.value > 0 ? 'ahead of' : 'behind'} this computer's clock.`
 })
 
 const checks = computed<SystemCheck[]>(() => {
@@ -214,8 +214,8 @@ const checks = computed<SystemCheck[]>(() => {
       ? {
           ...check,
           status: 'warning',
-          title: 'The clock of the server is off',
-          detail: `${skewText.value} Authenticator codes fail past ${skewLimit} seconds: check the time service of the host, or of this computer.`,
+          title: "The server's clock is off",
+          detail: `${skewText.value} Authenticator codes fail beyond ${skewLimit} seconds. Check the time sync on the host or on this computer.`,
         }
       : check,
   )
@@ -338,16 +338,16 @@ const certificateText = computed(() => {
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">System</h1>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          The resources of the host and of Authway Server, the network interfaces and the disks, read every 5 seconds,
-          and the checks of what goes wrong most.
+          Resource use for the host and Authway Server, network interfaces and disks, updated every 5 seconds, plus checks
+          for the most common problems.
         </p>
       </div>
       <p v-if="snapshot" class="text-xs text-slate-500 tabular-nums dark:text-slate-400">Read at {{ clockNow }}</p>
     </div>
 
     <UiNotice v-if="error" tone="error" class="mt-6">{{ error }}</UiNotice>
-    <UiNotice v-if="snapshot?.simulated" class="mt-6" title="Made-up values">
-      This server doesn't run on Linux: the resources, the interfaces and the disks are invented, to try the page.
+    <UiNotice v-if="snapshot?.simulated" class="mt-6" title="Simulated values">
+      This server isn't running on Linux, so resources, interfaces and disks are simulated for demonstration.
     </UiNotice>
 
     <div class="mt-6 border-b border-slate-200 dark:border-slate-800">
@@ -376,7 +376,7 @@ const certificateText = computed(() => {
             v-if="tabAlert[entry.id]"
             class="h-2 w-2 rounded-full"
             :class="tabAlert[entry.id] === 'red' ? 'bg-rose-500' : 'bg-amber-500'"
-            :title="tabAlert[entry.id] === 'red' ? 'An error' : 'A warning'"
+            :title="tabAlert[entry.id] === 'red' ? 'Has an error' : 'Has a warning'"
           />
         </button>
       </div>
@@ -475,7 +475,7 @@ const certificateText = computed(() => {
         <div>
           <h2 class="font-semibold">History</h2>
           <p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            Kept in memory: it starts again when Authway Server restarts. Past an hour, the points are averages of a minute.
+            Kept in memory, so it resets when Authway Server restarts. Beyond the last hour, each point is a one-minute average.
           </p>
         </div>
         <div class="inline-flex rounded-md border border-slate-300 bg-white p-0.5 shadow-sm dark:border-slate-600 dark:bg-slate-800" role="group" aria-label="Time range">
@@ -507,7 +507,7 @@ const certificateText = computed(() => {
         <div :class="[card, 'p-5']">
           <h3 class="text-sm font-semibold">Memory</h3>
           <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">
-            Of the {{ formatBytes(memoryTotal) }} of the host, without the files the kernel keeps in memory
+            Out of the host's {{ formatBytes(memoryTotal) }}, not counting the kernel's file cache
           </p>
           <LineChart
             label="Memory"
@@ -525,8 +525,8 @@ const certificateText = computed(() => {
             <div>
               <h3 class="text-sm font-semibold">Network</h3>
               <p class="text-xs text-slate-500 dark:text-slate-400">
-                The traffic of an interface of the container. eth0 carries the tunnels and the web UI; a WireGuard
-                interface, the traffic of the peers inside their tunnels.
+                Traffic on one of the container's interfaces. eth0 carries the encrypted VPN traffic and the web UI; a
+                WireGuard interface shows the peers' traffic inside the VPN.
               </p>
             </div>
             <label v-if="chartInterfaces.length" class="block">
@@ -562,7 +562,7 @@ const certificateText = computed(() => {
     >
       <h2 class="font-semibold">Network interfaces</h2>
       <p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-        The rates of the latest 5 seconds, and the totals since the interface was made.
+        Rates over the last 5 seconds, and totals since the interface was created.
       </p>
       <p v-if="!snapshot" class="mt-4 text-sm text-slate-500">Reading…</p>
       <div v-else :class="[card, 'mt-4 overflow-x-auto']">
@@ -628,7 +628,7 @@ const certificateText = computed(() => {
           <div v-for="disk in snapshot.disks" :key="disk.name" class="mt-4">
             <div class="flex items-baseline justify-between gap-3 text-sm">
               <p class="font-medium">
-                {{ disk.name === 'data' ? 'Data folder' : 'System of the container' }}
+                {{ disk.name === 'data' ? 'Data folder' : 'Container system' }}
                 <span class="ml-1 font-mono text-xs font-normal text-slate-500">{{ disk.path }}</span>
               </p>
               <p class="tabular-nums">{{ formatPercent(diskShare(disk)) }}</p>
@@ -639,7 +639,7 @@ const certificateText = computed(() => {
               :aria-valuenow="Math.round(diskShare(disk))"
               aria-valuemin="0"
               aria-valuemax="100"
-              :aria-label="`${disk.name === 'data' ? 'Data folder' : 'System of the container'} in use`"
+              :aria-label="`${disk.name === 'data' ? 'Data folder' : 'Container system'} in use`"
             >
               <div class="h-full rounded-full" :class="meterColor(diskShare(disk))" :style="{ width: `${Math.min(100, diskShare(disk))}%` }" />
             </div>
@@ -670,7 +670,7 @@ const certificateText = computed(() => {
               ['System', (host.os || '—') + (host.container ? ', in a container' : '')],
               ['Time zone', host.timezone],
               ['Load', `${host.load.map((value) => value.toFixed(2)).join(' · ')} (1, 5, 15 min)`],
-              ['Waiting for the disks', formatPercent(host.iowait)],
+              ['Waiting on disk (iowait)', formatPercent(host.iowait)],
               ['Swap', host.swap_total ? `${formatBytes(host.swap_total - host.swap_free)} of ${formatBytes(host.swap_total)} in use` : 'None'],
               ['IP forwarding', snapshot.ip_forward === null ? 'Unknown' : snapshot.ip_forward ? 'On' : 'Off'],
               ['IPv6', ipv6Text],
@@ -690,7 +690,7 @@ const certificateText = computed(() => {
               ['Started', dateTime(own.started)],
               ['Processors', formatPercent(own.cpu)],
               ['Memory', own.memory_limit ? `${formatBytes(own.memory)} of ${formatBytes(own.memory_limit)}` : `${formatBytes(own.memory)}, no limit`],
-              ['Memory of Go', formatBytes(own.heap)],
+              ['Go heap', formatBytes(own.heap)],
               ['Goroutines', count(own.goroutines)],
               ['Open files', own.max_files ? `${count(own.open_files)} of ${count(own.max_files)}` : count(own.open_files)],
               ['Built with', `${own.go_version}, ${own.platform}`],
@@ -748,12 +748,12 @@ const certificateText = computed(() => {
           <p v-if="entry.attrs" class="mt-0.5 font-mono text-xs break-all text-slate-500 dark:text-slate-400">{{ entry.attrs }}</p>
         </li>
         <li v-if="!log.length" class="px-5 py-6 text-center text-sm text-slate-500">
-          {{ logAll ? 'Nothing logged yet.' : 'No warning and no error since Authway Server started.' }}
+          {{ logAll ? 'Nothing logged yet.' : 'No warnings or errors since Authway Server started.' }}
         </li>
       </ol>
       <p class="border-t border-slate-200 px-5 py-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
-        The latest 500 lines and the latest 200 warnings and errors, since Authway Server started. The whole log is the
-        one of the container: <code class="font-mono">docker compose logs authway-server</code>
+        The last 500 lines and the last 200 warnings and errors since Authway Server started. For the full log, run
+        <code class="font-mono">docker compose logs authway-server</code>
       </p>
     </section>
   </div>

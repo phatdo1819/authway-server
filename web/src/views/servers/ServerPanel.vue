@@ -8,7 +8,8 @@ import UiButton from '../../components/UiButton.vue'
 import UiEmpty from '../../components/UiEmpty.vue'
 import UiMenu, { type MenuItem } from '../../components/UiMenu.vue'
 import UiNotice from '../../components/UiNotice.vue'
-import { ago, authModeLabel, dateTime, duration, errorMessage, formatBytes, lockModeLabel } from '../../format'
+import { ago, authModeLabel, dateTime, duration, errorMessage, formatBytes, lockLabel } from '../../format'
+import { routerRoute } from '../../routing'
 import { canManage, confirm, isAdmin, notify } from '../../state'
 import PeerAlertsModal from './PeerAlertsModal.vue'
 import PeerConfigModal from './PeerConfigModal.vue'
@@ -29,6 +30,9 @@ const configPeer = ref<Peer | null>(null)
 const alertsPeer = ref<Peer | null>(null)
 const routingHelp = ref(false)
 
+// for the drawing of the help: the route of the router in the first network whose address of Authway Server is known
+const helpRoute = computed(() => routerRoute(props.server.network, props.server.networks, props.servers))
+
 const gated = computed(() => props.server.auth_mode !== 'key')
 const bound = computed(() => gated.value && props.server.device_binding)
 // what the peers reach besides the networks: each other, the peers of other servers
@@ -38,10 +42,10 @@ const traffic = computed(() => {
     .filter((name): name is string => !!name)
   const parts: string[] = []
   if (props.server.client_to_client) {
-    parts.push('Between its peers')
+    parts.push('Between its own peers')
   }
   if (names.length) {
-    parts.push(`To the peers of ${names.join(', ')}`)
+    parts.push(`To peers on ${names.join(', ')}`)
   }
   return parts.join(' · ') || 'None'
 })
@@ -49,14 +53,14 @@ const traffic = computed(() => {
 const routingProblem = computed(() => {
   const drivers = (props.server.routes ?? []).map((route) => route.driver)
   if (drivers.includes('ipvlan')) {
-    return "The container is on an ipvlan network, which can't route the tunnels. See the System page."
+    return "Authway Server's container is on an ipvlan network, which can't route VPN traffic. See the System page."
   }
   return ''
 })
 // the next hop on the router: the Docker host when the container is on its bridge
 function routerHop(route: Route): string {
   if (route.host) {
-    return route.host.state === 'routed' && route.host.address ? route.host.address : 'the address of the Docker host'
+    return route.host.state === 'routed' && route.host.address ? route.host.address : "the Docker host's address"
   }
   return route.via || 'the container'
 }
@@ -70,19 +74,19 @@ function hostNote(route: Route): { text: string; warning: boolean } | null {
       }
       if (host.previous) {
         return {
-          text: `The address of the Docker host changed: the router still has the route via ${host.previous}. Change it, then say it's done at the top of the page.`,
+          text: `The Docker host's address changed, but the router still routes via ${host.previous}. Update the route, then confirm it at the top of the page.`,
           warning: true,
         }
       }
       return null
     case 'off':
-      return { text: "The Docker host doesn't send it on to the container: add compose.host-routes.yaml. See the System page.", warning: true }
+      return { text: "The Docker host doesn't forward this traffic to Authway Server. Add compose.host-routes.yaml; see the System page.", warning: true }
     case 'stopped':
-      return { text: "The helper of compose.host-routes.yaml isn't running. See the System page.", warning: true }
+      return { text: "The compose.host-routes.yaml helper isn't running. See the System page.", warning: true }
     case 'pending':
       return { text: 'The Docker host is adding the route…', warning: false }
     case 'failed':
-      return { text: `The Docker host can't route it: ${host.error}.`, warning: true }
+      return { text: `The Docker host can't route this: ${host.error}.`, warning: true }
   }
   return null
 }
@@ -103,7 +107,7 @@ function peerNotes(peer: Peer): string[] {
   return notes
 }
 function accessTitle(peer: Peer): string | undefined {
-  return peer.access.length ? `Reaches only ${peer.access.join(', ')}` : undefined
+  return peer.access.length ? `Can only reach ${peer.access.join(', ')}` : undefined
 }
 // the servers whose peers reach the peers of this one
 const reachedBy = computed(() =>
@@ -191,7 +195,7 @@ async function run(action: () => Promise<unknown>, done: string) {
 async function deleteServer() {
   const ok = await confirm(
     `Delete ${props.server.name}?`,
-    `Its ${props.server.peers} peers are deleted too, and their configuration files stop working. This can't be undone.`,
+    `Its ${props.server.peers} peers will also be deleted, and their configuration files will stop working. This can't be undone.`,
     'Delete server',
   )
   if (!ok) {
@@ -223,36 +227,36 @@ function peerMenu(peer: Peer): MenuItem[] {
   }
   if (bound.value && peer.device) {
     items.push({
-      label: peer.device.state === 'enrolled' ? 'Replace the device' : 'Allow a device',
+      label: peer.device.state === 'enrolled' ? 'Replace device' : 'Allow a device',
       icon: 'device',
       action: async () => {
         const ok = await confirm(
-          `Let a new device enroll for ${peer.name}?`,
+          `Allow a new device for ${peer.name}?`,
           (peer.device?.state === 'enrolled'
-            ? `${peer.device.name || 'The device enrolled'} is forgotten and the session ends. `
+            ? `${peer.device.name || 'The enrolled device'} will be removed and its session ends. `
             : '') +
-            'The next device that logs in with the configuration file and the password of the user is enrolled. Do it after a reinstall or for a new computer.',
+            "The next device that logs in with the configuration file and the user's password will be enrolled. Use this after reinstalling, or for a new computer.",
           'Allow a new device',
           false,
         )
         if (ok) {
-          await run(() => api.allowDevice(peer.id), `A new device can enroll for ${peer.name}.`)
+          await run(() => api.allowDevice(peer.id), `A new device can now enroll for ${peer.name}.`)
         }
       },
     })
     if (peer.device.state !== 'closed') {
       items.push({
-        label: 'Revoke the device',
+        label: 'Revoke device',
         icon: 'close',
         danger: true,
         action: async () => {
           const ok = await confirm(
-            `Revoke the device of ${peer.name}?`,
-            'The session ends and nobody logs in for this peer until you allow a new device.',
+            `Revoke the device for ${peer.name}?`,
+            'The session ends, and no one can log in with this peer until you allow a new device.',
             'Revoke',
           )
           if (ok) {
-            await run(() => api.revokeDevice(peer.id), `The device of ${peer.name} is revoked.`)
+            await run(() => api.revokeDevice(peer.id), `Device for ${peer.name} revoked.`)
           }
         },
       })
@@ -265,9 +269,9 @@ function peerMenu(peer: Peer): MenuItem[] {
       action: async () => {
         const ok = await confirm(
           `New keys for ${peer.name}?`,
-          'The current configuration file, and every copy of it, stops working. Give the new file to the user.' +
-            (bound.value ? ' The device enrolled is forgotten: the one that logs in with the new file is enrolled.' : ''),
-          'Make new keys',
+          'The current configuration file and any copies of it will stop working. Give the new file to the user.' +
+            (bound.value ? ' The enrolled device is removed; the next device that logs in with the new file will be enrolled.' : ''),
+          'Generate new keys',
         )
         if (ok) {
           await run(() => api.newPeerKeys(peer.id), `${peer.name} has new keys.`)
@@ -280,7 +284,7 @@ function peerMenu(peer: Peer): MenuItem[] {
       icon: 'trash',
       danger: true,
       action: async () => {
-        const ok = await confirm(`Delete ${peer.name}?`, 'Its configuration file stops working.', 'Delete peer')
+        const ok = await confirm(`Delete ${peer.name}?`, 'Its configuration file will stop working.', 'Delete peer')
         if (ok) {
           await run(() => api.deletePeer(peer.id), `${peer.name} deleted.`)
         }
@@ -303,13 +307,13 @@ function deviceTitle(peer: Peer): string {
   }
   const lines = [`Enrolled ${dateTime(device.enrolled_at)}`, `Last login ${dateTime(device.last_used_at)} from ${device.last_from || 'an unknown IP'}`]
   if (device.kind && device.kind !== 'software') {
-    lines.push(`Key in the ${device.kind === 'tpm' ? 'TPM' : 'Secure Enclave'}`)
+    lines.push(`Key stored in the ${device.kind === 'tpm' ? 'TPM' : 'Secure Enclave'}`)
   }
   if (props.server.machine_id) {
-    lines.push(device.machine_id ? 'Computer recorded' : 'Computer recorded at the next login')
+    lines.push(device.machine_id ? 'Computer recorded' : 'Computer will be recorded at next login')
   }
   if (device.wireguard_key === 'device') {
-    lines.push(`Own WireGuard key since ${dateTime(device.wireguard_key_at)}`)
+    lines.push(`Has its own WireGuard key since ${dateTime(device.wireguard_key_at)}`)
   }
   return lines.join('\n')
 }
@@ -319,7 +323,7 @@ async function copyKey() {
     await navigator.clipboard.writeText(props.server.public_key)
     notify('Public key copied.')
   } catch {
-    notify("The browser doesn't allow copying here.", 'error')
+    notify("Your browser doesn't allow copying here.", 'error')
   }
 }
 </script>
@@ -349,11 +353,11 @@ async function copyKey() {
       </div>
       <dl class="grid gap-x-8 gap-y-4 px-5 py-5 text-sm break-words sm:grid-cols-2 xl:grid-cols-4">
         <div>
-          <dt class="text-slate-500 dark:text-slate-400">Endpoint of the peers</dt>
+          <dt class="text-slate-500 dark:text-slate-400">Peers connect to</dt>
           <dd class="mt-0.5 font-mono break-all">{{ endpoint }}</dd>
         </div>
         <div>
-          <dt class="text-slate-500 dark:text-slate-400">Tunnel network</dt>
+          <dt class="text-slate-500 dark:text-slate-400">VPN network</dt>
           <dd class="mt-0.5 font-mono">{{ server.network }} <span class="text-slate-500">(server {{ server.address }})</span></dd>
           <dd v-if="server.network6" class="mt-0.5 font-mono break-words">
             {{ server.network6 }} <span class="text-slate-500">(server {{ server.address6 }})</span>
@@ -361,34 +365,34 @@ async function copyKey() {
           <dd v-else class="mt-0.5 text-slate-500 dark:text-slate-400">IPv4 only</dd>
         </div>
         <div>
-          <dt class="text-slate-500 dark:text-slate-400">Networks the peers reach</dt>
+          <dt class="text-slate-500 dark:text-slate-400">Networks peers can reach</dt>
           <dd class="mt-0.5 font-mono">{{ server.networks.length ? server.networks.join(', ') : 'None' }}</dd>
         </div>
         <div>
           <dt class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-            What the networks see
+            How your networks see peers
             <button
               type="button"
               class="rounded-full p-0.5 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-sky-600 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-              aria-label="How NAT and routed work"
-              title="How NAT and routed work"
+              aria-label="How NAT and routed modes work"
+              title="How NAT and routed modes work"
               @click="routingHelp = true"
             >
               <AppIcon name="help" :size="16" />
             </button>
           </dt>
-          <dd v-if="!server.routed" class="mt-0.5">NAT: the address of the container</dd>
+          <dd v-if="!server.routed" class="mt-0.5">NAT: as Authway Server's address</dd>
           <template v-else>
             <dd class="mt-0.5">
-              Routed: the address of each peer<template v-if="server.inbound"> · the networks start connections</template>
+              Routed: each peer's own address<template v-if="server.inbound"> · networks can connect to peers</template>
             </dd>
             <template v-for="route in server.routes ?? []" :key="route.tunnel">
               <dd class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Route on the router:
+                Route to add on your router:
                 <span class="font-mono break-words text-slate-700 dark:text-slate-300">{{ route.tunnel }} via {{ routerHop(route) }}</span>
               </dd>
               <dd v-if="route.host?.state === 'routed'" class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                The Docker host sends it on to the container, <span class="font-mono">{{ route.via }}</span>
+                The Docker host forwards it to Authway Server at <span class="font-mono">{{ route.via }}</span>
               </dd>
               <dd
                 v-if="hostNote(route)"
@@ -414,9 +418,9 @@ async function copyKey() {
           <dd class="mt-0.5">{{ duration(server.session_timeout) }}</dd>
         </div>
         <div v-if="gated">
-          <dt class="text-slate-500 dark:text-slate-400">Copied configurations</dt>
+          <dt class="text-slate-500 dark:text-slate-400">Shared configurations</dt>
           <dd class="mt-0.5">
-            Lock {{ lockModeLabel(server.lock_endpoint).toLowerCase() }}<template v-if="server.detect_copies">
+            {{ lockLabel(server.lock_endpoint) }}<template v-if="server.detect_copies">
               · detected{{ server.block_copies ? ' and blocked' : '' }}</template
             >
           </dd>
@@ -424,8 +428,8 @@ async function copyKey() {
         <div v-if="gated">
           <dt class="text-slate-500 dark:text-slate-400">Device binding</dt>
           <dd class="mt-0.5">
-            <template v-if="bound">Only the enrolled device{{ server.machine_id ? ', on its computer' : '' }}</template>
-            <template v-else>Off: any device with the file and the password</template>
+            <template v-if="bound">Only the enrolled device{{ server.machine_id ? ', on the same computer' : '' }}</template>
+            <template v-else>Off: any device with the file and password</template>
           </dd>
         </div>
         <div>
@@ -433,7 +437,7 @@ async function copyKey() {
           <dd class="mt-0.5">
             {{ traffic }}
             <p v-if="reachedBy.length" class="text-xs text-slate-500 dark:text-slate-400">
-              The peers of {{ reachedBy.join(', ') }} reach these peers
+              Peers on {{ reachedBy.join(', ') }} can reach these peers
             </p>
           </dd>
         </div>
@@ -480,16 +484,16 @@ async function copyKey() {
 
       <UiNotice v-if="withoutUser && canManage()" tone="warning" class="mt-4">
         {{ withoutUser === 1 ? "1 peer has no user, so it can't log in." : `${withoutUser} peers have no user, so they can't log in.` }}
-        Choose a user with Edit, in the menu of the peer.
+        Assign a user with Edit, in the peer's menu.
       </UiNotice>
       <UiEmpty
         v-if="loaded && !peers.length"
         class="mt-4"
         icon="users"
-        title="No peer yet"
+        title="No peers yet"
         :text="
           gated
-            ? 'Each peer belongs to a user, who logs in before the traffic of the peer passes.'
+            ? 'Each peer belongs to a user, who must log in before the peer\'s traffic gets through.'
             : 'Each peer gets a configuration file for the WireGuard apps.'
         "
       />
@@ -555,12 +559,12 @@ async function copyKey() {
                 <template v-if="peer.device?.state === 'enrolled'">
                   <p class="flex items-center gap-1.5 font-medium" :title="deviceTitle(peer)">
                     <AppIcon name="device" :size="15" class="shrink-0 text-slate-500" />
-                    <span class="truncate">{{ peer.device.name || 'Device without a name' }}</span>
+                    <span class="truncate">{{ peer.device.name || 'Unnamed device' }}</span>
                     <AppIcon v-if="peer.device.wireguard_key === 'device'" name="key" :size="14" class="shrink-0 text-emerald-600" />
                     <span v-if="peer.device.wireguard_key === 'device'" class="sr-only">, with its own WireGuard key</span>
                   </p>
                   <p class="text-xs text-slate-500 dark:text-slate-400">
-                    {{ peer.device.wireguard_key === 'device' ? 'Own key: the file no longer connects' : 'Connects with the file' }}
+                    {{ peer.device.wireguard_key === 'device' ? 'Uses its own key; the file no longer connects' : 'Connects with the configuration file' }}
                   </p>
                 </template>
                 <template v-else-if="peer.device?.state === 'waiting'">
@@ -569,7 +573,7 @@ async function copyKey() {
                 </template>
                 <template v-else>
                   <UiBadge tone="gray">None</UiBadge>
-                  <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Allow a device to log in</p>
+                  <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Allow a device so it can log in</p>
                 </template>
               </td>
               <td class="px-4 py-3 whitespace-nowrap">
@@ -579,7 +583,7 @@ async function copyKey() {
                 </template>
                 <!-- WireGuard forgets the handshakes when the container starts again: the history doesn't -->
                 <template v-else>
-                  <p :title="`Last seen ${dateTime(peer.last_seen)}, in the connection history`">Seen {{ ago(peer.last_seen) }}</p>
+                  <p :title="`Last seen ${dateTime(peer.last_seen)}, from the connection history`">Seen {{ ago(peer.last_seen) }}</p>
                   <p v-if="peer.last_endpoint" class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ peer.last_endpoint }}</p>
                 </template>
               </td>
@@ -591,7 +595,7 @@ async function copyKey() {
               </td>
             </tr>
             <tr v-if="!filtered.length">
-              <td :colspan="bound ? 7 : 6" class="px-4 py-6 text-center text-slate-500">No peer matches "{{ search }}".</td>
+              <td :colspan="bound ? 7 : 6" class="px-4 py-6 text-center text-slate-500">No peers match "{{ search }}".</td>
             </tr>
           </tbody>
         </table>
@@ -609,6 +613,11 @@ async function copyKey() {
     />
     <PeerConfigModal :peer="configPeer" :server="server" @close="configPeer = null" />
     <PeerAlertsModal :peer="alertsPeer" @close="alertsPeer = null" @cleared="loadPeers" />
-    <RoutingHelpModal :open="routingHelp" :routed="server.routed" @close="routingHelp = false" />
+    <RoutingHelpModal
+      :open="routingHelp"
+      :routed="server.routed"
+      :route="helpRoute"
+      @close="routingHelp = false"
+    />
   </div>
 </template>

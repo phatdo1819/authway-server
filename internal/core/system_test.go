@@ -54,7 +54,7 @@ func TestSystemChecks(t *testing.T) {
 	}
 	// the disabled server has no interface, and isn't missed
 	if check := checkOf(t, snapshot, "interfaces"); check.Status != system.CheckError ||
-		check.Detail != "Missing: wg3 ("+servers[3].Name+"). The peers of that server can't connect." {
+		check.Detail != "Missing: wg3 ("+servers[3].Name+"). Peers on that server can't connect." {
 		t.Errorf("interfaces: %+v", check)
 	}
 
@@ -71,7 +71,7 @@ func TestSystemChecks(t *testing.T) {
 	if check := checkOf(t, snapshot, "tunnels"); check.Status != system.CheckError || !strings.HasPrefix(check.Detail, "netlink: permission denied.") {
 		t.Errorf("tunnels: %+v", check)
 	}
-	if check := checkOf(t, snapshot, "interfaces"); check.Status != system.CheckOK || check.Title != "The interfaces of the 2 enabled servers are up" {
+	if check := checkOf(t, snapshot, "interfaces"); check.Status != system.CheckOK || check.Title != "Interfaces are up on all enabled servers" {
 		t.Errorf("interfaces: %+v", check)
 	}
 	f.net.StatsError = nil

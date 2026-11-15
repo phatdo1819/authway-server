@@ -21,7 +21,14 @@ import (
 type loginFailures struct {
 	byPeer  map[int64][]failure
 	trusted map[int64]string
+	// the password checks in progress, by peer and IP: they count toward the limit until they end, so attempts sent
+	// together can't get more guesses than MaxFailures before the lockout
+	checking map[int64]map[string]int
 }
+
+// checkingRetry is how long an attempt waits when the checks in progress already reach the limit: they end in
+// about a second, with a lockout or a login.
+const checkingRetry = 2 * time.Second
 
 type failure struct {
 	at time.Time
@@ -29,7 +36,7 @@ type failure struct {
 }
 
 func newLoginFailures() *loginFailures {
-	return &loginFailures{byPeer: map[int64][]failure{}, trusted: map[int64]string{}}
+	return &loginFailures{byPeer: map[int64][]failure{}, trusted: map[int64]string{}, checking: map[int64]map[string]int{}}
 }
 
 func (l *loginFailures) recent(peer int64, now time.Time) []failure {
@@ -58,16 +65,43 @@ func (l *loginFailures) lockedUntil(peer int64, ip string, now time.Time) (time.
 			own = append(own, f)
 		}
 	}
+	checking, checkingAll := l.checking[peer][ip], 0
+	for _, count := range l.checking[peer] {
+		checkingAll += count
+	}
 	var until time.Time
 	switch {
 	case len(own) >= MaxFailures:
 		until = own[len(own)-1].at.Add(LockoutTime)
 	case ip != l.trusted[peer] && len(recent) >= MaxFailures*PeerFailureFactor:
 		until = recent[len(recent)-1].at.Add(LockoutTime)
+	case len(own)+checking >= MaxFailures, ip != l.trusted[peer] && len(recent)+checkingAll >= MaxFailures*PeerFailureFactor:
+		until = now.Add(checkingRetry)
 	default:
 		return time.Time{}, false
 	}
 	return until, now.Before(until)
+}
+
+// begin counts a password check in progress, until end.
+func (l *loginFailures) begin(peer int64, ip string) {
+	ip = clientKey(ip)
+	if l.checking[peer] == nil {
+		l.checking[peer] = map[string]int{}
+	}
+	l.checking[peer][ip]++
+}
+
+func (l *loginFailures) end(peer int64, ip string) {
+	ip = clientKey(ip)
+	if l.checking[peer][ip] <= 1 {
+		delete(l.checking[peer], ip)
+		if len(l.checking[peer]) == 0 {
+			delete(l.checking, peer)
+		}
+		return
+	}
+	l.checking[peer][ip]--
 }
 
 // add counts a failure and returns the IPs it locks out, none when it locks out nothing new.
@@ -197,7 +231,7 @@ func keyOf(publicKey string) wgtypes.Key {
 
 // followLocked locks the open sessions to the public IP of their login, as their server says: with the strict
 // lock a session pauses while its peer sends from another IP (another device has its key, or the device moved) and
-// resumes when the peer sends from the IP of the login again; with roaming the session follows the peer. onlyPeer,
+// resumes when the peer sends from the IP of the login again; with the lock off the session follows the peer. onlyPeer,
 // when not 0, limits it to one peer.
 func (s *Service) followLocked(stats map[wgtypes.Key]network.PeerStats, onlyPeer int64) {
 	q := s.db.Q()
@@ -229,10 +263,6 @@ func (s *Service) followLocked(stats map[wgtypes.Key]network.PeerStats, onlyPeer
 				if err := q.SetSessionEndpoint(session.ID, current); err == nil {
 					s.log.Info("session follows its peer", "user", session.Username, "peer", session.PeerName, "from", current)
 				}
-			}
-		case store.LockOff:
-			if paused {
-				s.resumeLocked(session, server)
 			}
 		default:
 			// unknown right after a restart of the interface, until the peer sends again

@@ -5,8 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +20,11 @@ import (
 )
 
 func newTestAPI(t *testing.T) http.Handler {
+	t.Helper()
+	return newTestAdmin(t).Handler()
+}
+
+func newTestAdmin(t *testing.T) *Admin {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -32,7 +40,53 @@ func newTestAPI(t *testing.T) http.Handler {
 	if _, err := service.EnsureAdmin("admin", "Admin password 1"); err != nil {
 		t.Fatal(err)
 	}
-	return New(service, Options{Log: log}).Handler()
+	return New(service, Options{Log: log})
+}
+
+// The refreshes the page makes by itself don't keep a session from ending when idle; a request of someone there does.
+func TestBackgroundRequests(t *testing.T) {
+	a := newTestAdmin(t)
+	c := &client{t: t, h: a.Handler()}
+	if status, data := c.login("admin", "Admin password 1", ""); status != 200 {
+		t.Fatalf("login: %d %v", status, data)
+	}
+	age := func(by time.Duration) {
+		a.mu.Lock()
+		for _, entry := range a.sessions {
+			entry.seen = entry.seen.Add(-by)
+		}
+		a.mu.Unlock()
+	}
+	background := func() int {
+		r := httptest.NewRequest("GET", "/api/status", nil)
+		r.RemoteAddr = "192.168.1.10:50000"
+		r.Header.Set(csrfHeader, csrfValue)
+		r.Header.Set(backgroundHeader, "1")
+		r.AddCookie(c.cookie)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	age(sessionIdle - time.Minute)
+	if code := background(); code != 200 {
+		t.Fatalf("a refresh before the idle limit: %d", code)
+	}
+	// the refresh didn't count: two minutes later the session has been idle too long
+	age(2 * time.Minute)
+	if code := background(); code != 401 {
+		t.Fatalf("a refresh after the idle limit: %d", code)
+	}
+
+	c = &client{t: t, h: a.Handler()}
+	c.login("admin", "Admin password 1", "")
+	age(sessionIdle - time.Minute)
+	if w, _ := c.do("GET", "/api/status", "", true); w.Code != 200 {
+		t.Fatalf("a request of someone there: %d", w.Code)
+	}
+	age(2 * time.Minute)
+	if w, _ := c.do("GET", "/api/status", "", true); w.Code != 200 {
+		t.Fatalf("after a request of someone there: %d", w.Code)
+	}
 }
 
 func (c *client) login(username, password, otp string) (int, map[string]any) {
@@ -230,6 +284,55 @@ func TestPasswordConfirmations(t *testing.T) {
 	// the rest of the web UI still works
 	if w, _ := admin.do("GET", "/api/servers", "", true); w.Code != 200 {
 		t.Fatalf("the servers: %d", w.Code)
+	}
+}
+
+// Logins sent at once count before their password check: they can't all pass the limit of 10 failures.
+func TestLoginAttemptsAtOnce(t *testing.T) {
+	h := newTestAPI(t)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	statuses := map[int]int{}
+	for index := range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			status, _ := (&client{t: t, h: h}).login("admin", "Guess "+strconv.Itoa(index), "")
+			mu.Lock()
+			statuses[status]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if statuses[401] > 10 || statuses[401]+statuses[429] != 30 {
+		t.Fatalf("30 logins at once: %v", statuses)
+	}
+	if status, data := (&client{t: t, h: h}).login("admin", "Admin password 1", ""); status != 429 {
+		t.Fatalf("the right password after them: %d %v", status, data)
+	}
+}
+
+// A login clears the failures of its own account only: an account of its own doesn't reset the guesses at another.
+func TestLoginFailuresByAccount(t *testing.T) {
+	h := newTestAPI(t)
+	admin := &client{t: t, h: h}
+	admin.login("admin", "Admin password 1", "")
+	if w, data := admin.do("POST", "/api/admins", `{"username":"vic","role":"viewer","password":"Violet sky 98765"}`, true); w.Code != 200 {
+		t.Fatalf("add: %d %v", w.Code, data)
+	}
+	for index := range 9 {
+		if status, data := (&client{t: t, h: h}).login("admin", "Guess "+strconv.Itoa(index), ""); status != 401 {
+			t.Fatalf("guess %d: %d %v", index, status, data)
+		}
+	}
+	if status, data := (&client{t: t, h: h}).login("VIC", "Violet sky 98765", ""); status != 200 {
+		t.Fatalf("vic: %d %v", status, data)
+	}
+	if status, data := (&client{t: t, h: h}).login("admin", "Guess 9", ""); status != 401 {
+		t.Fatalf("the 10th guess: %d %v", status, data)
+	}
+	if status, data := (&client{t: t, h: h}).login("admin", "Admin password 1", ""); status != 429 {
+		t.Fatalf("after 10 guesses and a login of vic: %d %v", status, data)
 	}
 }
 

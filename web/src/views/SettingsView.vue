@@ -26,6 +26,10 @@ const requireMfa = ref(false)
 const mfaError = ref('')
 const savingMfa = ref(false)
 
+const rememberDays = ref<string | number>(30)
+const rememberError = ref('')
+const savingRemember = ref(false)
+
 const enrollHours = ref<string | number>(72)
 const enrollError = ref('')
 const savingEnroll = ref(false)
@@ -36,7 +40,7 @@ const historyError = ref('')
 const savingHistory = ref(false)
 
 const lengthHelper = computed(
-  () => `From 8 to 64. The administrators need at least ${adminMinPassword}, whatever this says.`,
+  () => `From 8 to 64. Administrators always need at least ${adminMinPassword}, regardless of this setting.`,
 )
 
 onMounted(async () => {
@@ -46,6 +50,7 @@ onMounted(async () => {
     policy.value = { ...settings.password_policy }
     minLength.value = settings.password_policy.min_length
     requireMfa.value = settings.require_admin_mfa
+    rememberDays.value = settings.admin_remember_days
     enrollHours.value = settings.enroll_hours
     historyDays.value = savedDays.value = settings.history_days
   } catch (e) {
@@ -57,7 +62,7 @@ async function saveHistory() {
   historyError.value = ''
   const days = Number(historyDays.value)
   if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    historyError.value = 'Use from 1 to 3650 days (10 years).'
+    historyError.value = 'Enter 1 to 3650 days (10 years).'
     return
   }
   // fewer days delete the older rows at once: there is no way back
@@ -66,8 +71,8 @@ async function saveHistory() {
     days < savedDays.value &&
     !(await confirm(
       `Keep only ${days} ${unit}?`,
-      `The logins, the connections, the events and the alerts older than ${days} ${unit} are deleted within a few seconds, and can't come back.`,
-      'Delete the older history',
+      `Logins, connections, events and alerts older than ${days} ${unit} will be deleted within a few seconds. This can't be undone.`,
+      'Delete older history',
     ))
   ) {
     return
@@ -77,9 +82,27 @@ async function saveHistory() {
     historyDays.value = savedDays.value = (await api.saveSettings({ history_days: days })).history_days
     notify('Settings saved.')
   } catch (e) {
-    historyError.value = e instanceof ApiError && e.fields.history_days ? 'Use from 1 to 3650 days (10 years).' : errorMessage(e)
+    historyError.value = e instanceof ApiError && e.fields.history_days ? 'Enter 1 to 3650 days (10 years).' : errorMessage(e)
   } finally {
     savingHistory.value = false
+  }
+}
+
+async function saveRemember() {
+  rememberError.value = ''
+  const days = Number(rememberDays.value)
+  if (!Number.isInteger(days) || days < 0 || days > 90) {
+    rememberError.value = 'Enter 0 to 90 days.'
+    return
+  }
+  savingRemember.value = true
+  try {
+    rememberDays.value = (await api.saveSettings({ admin_remember_days: days })).admin_remember_days
+    notify(days === 0 ? 'Settings saved. Administrators need a code at every login again.' : 'Settings saved.')
+  } catch (e) {
+    rememberError.value = e instanceof ApiError && e.fields.admin_remember_days ? 'Enter 0 to 90 days.' : errorMessage(e)
+  } finally {
+    savingRemember.value = false
   }
 }
 
@@ -88,9 +111,9 @@ async function saveEnroll() {
   enrollError.value = ''
   try {
     enrollHours.value = (await api.saveSettings({ enroll_hours: Number(enrollHours.value) })).enroll_hours
-    notify('Settings saved. They apply to the enrollments opened from now on.')
+    notify('Settings saved. They apply to enrollments started from now on.')
   } catch (e) {
-    enrollError.value = e instanceof ApiError && e.fields.enroll_hours ? 'Use from 1 to 720 hours (30 days).' : errorMessage(e)
+    enrollError.value = e instanceof ApiError && e.fields.enroll_hours ? 'Enter 1 to 720 hours (30 days).' : errorMessage(e)
   } finally {
     savingEnroll.value = false
   }
@@ -119,9 +142,9 @@ async function savePolicy() {
     if (session.me) {
       session.me.password_policy = saved.password_policy
     }
-    notify('Password policy saved. It applies to the passwords chosen from now on.')
+    notify('Password policy saved. It applies to passwords set from now on.')
   } catch (e) {
-    policyError.value = e instanceof ApiError && e.fields.min_length ? 'Use a length from 8 to 64.' : errorMessage(e)
+    policyError.value = e instanceof ApiError && e.fields.min_length ? 'Enter a length from 8 to 64.' : errorMessage(e)
   } finally {
     savingPolicy.value = false
   }
@@ -131,8 +154,8 @@ async function saveMfa() {
   mfaError.value = ''
   if (requireMfa.value) {
     const ok = await confirm(
-      'Require an authenticator of every administrator?',
-      'The administrators without one set it up at their next request, before anything else.',
+      'Require an authenticator for every administrator?',
+      "Administrators who don't have one will have to set it up before they can do anything else.",
       'Require',
       false,
     )
@@ -161,8 +184,8 @@ async function saveMfa() {
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Settings</h1>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-        <template v-if="!canEdit">Only an Administrator changes the settings of the server.</template>
-        Your password and your authenticator app are in
+        <template v-if="!canEdit">Only Administrators can change these settings.</template>
+        Your own password and authenticator app are under
         <RouterLink :to="{ name: 'account' }" class="font-medium text-sky-700 hover:underline dark:text-sky-400">Your account</RouterLink>.
       </p>
     </div>
@@ -176,7 +199,7 @@ async function saveMfa() {
           placeholder="vpn.example.com"
           :error="hostError"
           :disabled="!canEdit"
-          helper="The address that new servers propose to their peers. The servers keep their own: edit them to change it."
+          helper="The address new servers suggest for their peers. Existing servers keep their own; edit them to change it."
         />
         <div v-if="canEdit" class="flex justify-end">
           <UiButton type="submit" variant="primary" :loading="savingHost">Save</UiButton>
@@ -187,8 +210,9 @@ async function saveMfa() {
     <section :class="section">
       <h2 class="text-base font-semibold">Device binding</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-        On the servers that ask for it, a new peer, a peer with new keys or another user enrolls the first device that logs
-        in, during this time. After it, nobody logs in until an administrator allows a device.
+        On servers that use device binding, the first device to log in during this window is enrolled (for a new peer, a
+        peer with new keys, or a peer given to another user). After the window closes, no one can log in until an
+        administrator allows a device.
       </p>
       <form class="mt-4 space-y-4" novalidate @submit.prevent="saveEnroll">
         <div class="max-w-48">
@@ -204,12 +228,12 @@ async function saveMfa() {
     <section :class="section">
       <h2 class="text-base font-semibold">History</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-        How long Activity keeps the logins, the connections, the events and the alerts. The older ones are deleted every
-        hour. The backups don't have the history.
+        How long Activity keeps logins, connections, events and alerts. Older entries are deleted every hour. Backups
+        don't include history.
       </p>
       <form class="mt-4 space-y-4" novalidate @submit.prevent="saveHistory">
         <div class="max-w-48">
-          <UiInput v-model="historyDays" label="Keep the history (days)" type="number" :error="historyError" :disabled="!canEdit" />
+          <UiInput v-model="historyDays" label="Keep history for (days)" type="number" :error="historyError" :disabled="!canEdit" />
         </div>
         <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">From 1 to 3650 (10 years). 90 by default.</p>
         <div v-if="canEdit" class="flex justify-end">
@@ -221,20 +245,20 @@ async function saveMfa() {
     <section :class="section">
       <h2 class="text-base font-semibold">Password policy</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-        For the passwords that the users and the administrators get from now on. The current ones keep working until they
-        change.
+        Applies to passwords that users and administrators get from now on. Existing passwords keep working until they're
+        changed.
       </p>
       <form class="mt-4 space-y-4" novalidate @submit.prevent="savePolicy">
         <div class="max-w-48">
           <UiInput v-model="minLength" label="Minimum length" type="number" :disabled="!canEdit" />
         </div>
         <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">{{ lengthHelper }}</p>
-        <UiToggle v-model="policy.require_lower" label="A lowercase letter" :disabled="!canEdit" />
-        <UiToggle v-model="policy.require_upper" label="An uppercase letter" :disabled="!canEdit" />
-        <UiToggle v-model="policy.require_digit" label="A digit" :disabled="!canEdit" />
-        <UiToggle v-model="policy.require_symbol" label="A symbol or a space" :disabled="!canEdit" />
+        <UiToggle v-model="policy.require_lower" label="Require a lowercase letter" :disabled="!canEdit" />
+        <UiToggle v-model="policy.require_upper" label="Require an uppercase letter" :disabled="!canEdit" />
+        <UiToggle v-model="policy.require_digit" label="Require a digit" :disabled="!canEdit" />
+        <UiToggle v-model="policy.require_symbol" label="Require a symbol or space" :disabled="!canEdit" />
         <p class="text-sm text-slate-600 dark:text-slate-300">
-          Users: {{ policyText({ ...policy, min_length: Number(minLength) || policy.min_length }) }}
+          For users: {{ policyText({ ...policy, min_length: Number(minLength) || policy.min_length }) }}
         </p>
         <UiNotice v-if="policyError" tone="error">{{ policyError }}</UiNotice>
         <div v-if="canEdit" class="flex justify-end">
@@ -244,17 +268,30 @@ async function saveMfa() {
     </section>
 
     <section :class="section">
-      <h2 class="text-base font-semibold">Login of the administrators</h2>
+      <h2 class="text-base font-semibold">Administrator login</h2>
       <form class="mt-4 space-y-4" novalidate @submit.prevent="saveMfa">
         <UiToggle
           v-model="requireMfa"
           label="Require an authenticator app"
           :disabled="!canEdit"
-          description="Every administrator logs in with a code of an authenticator app too. The ones without one set it up before anything else, and nobody can remove theirs."
+          description="Every administrator also needs a code from an authenticator app to log in. Those without one must set it up first, and no one can remove theirs."
         />
         <UiNotice v-if="mfaError" tone="error">{{ mfaError }}</UiNotice>
         <div v-if="canEdit" class="flex justify-end">
           <UiButton type="submit" variant="primary" :loading="savingMfa">Save</UiButton>
+        </div>
+      </form>
+      <form class="mt-6 space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800" novalidate @submit.prevent="saveRemember">
+        <p class="text-sm text-slate-500 dark:text-slate-400">
+          When administrators enter an authenticator code, they can tick "Remember this device". From that browser, the
+          password alone is then enough for this many days. A new password or authenticator ends it early.
+        </p>
+        <div class="max-w-48">
+          <UiInput v-model="rememberDays" label="Remember devices for (days)" type="number" :error="rememberError" :disabled="!canEdit" />
+        </div>
+        <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">From 0 to 90. 0 turns it off. 30 by default.</p>
+        <div v-if="canEdit" class="flex justify-end">
+          <UiButton type="submit" variant="primary" :loading="savingRemember">Save</UiButton>
         </div>
       </form>
     </section>

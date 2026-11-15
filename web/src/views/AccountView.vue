@@ -29,7 +29,7 @@ const initials = computed(() => {
 async function enrolled() {
   enrolling.value = false
   await checkSession(true)
-  notify('Authenticator turned on. Your other sessions of the web UI are logged out.')
+  notify('Authenticator turned on. Your other web UI sessions have been logged out.')
 }
 
 function openRemove() {
@@ -46,7 +46,7 @@ async function removeTotp() {
     removing.value = false
     removePassword.value = ''
     await checkSession(true)
-    notify('Authenticator removed: the next logins ask only for the password.')
+    notify('Authenticator removed. From now on, you log in with just your password.')
   } catch (e) {
     removeError.value = e instanceof ApiError && e.code === 'validation' ? 'Wrong password.' : errorMessage(e)
   } finally {
@@ -94,11 +94,11 @@ async function removeTotp() {
         </div>
       </div>
       <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">
-        <template v-if="session.me?.totp">The login asks for a code of the app after the password.</template>
-        <template v-else>The login asks only for the password. With an app, a stolen password isn't enough.</template>
+        <template v-if="session.me?.totp">After your password, the login asks for a code from your app.</template>
+        <template v-else>You log in with just your password. With an authenticator app, a stolen password isn't enough to get in.</template>
       </p>
       <p v-if="session.me?.totp && session.me.require_admin_mfa" class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-        The settings require an authenticator of every administrator: yours can be replaced, not removed.
+        Settings require every administrator to use an authenticator. You can replace yours, but not remove it.
       </p>
       <div v-if="enrolling" class="mt-4 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
         <AuthenticatorSetup cancellable @done="enrolled" @cancel="enrolling = false" />
@@ -108,15 +108,15 @@ async function removeTotp() {
     <section :class="section">
       <h2 class="text-base font-semibold">Password</h2>
       <div class="mt-4">
-        <ChangePasswordForm @done="notify('Password changed. The other sessions of the web UI are logged out.')" />
+        <ChangePasswordForm @done="notify('Password changed. Your other web UI sessions have been logged out.')" />
       </div>
     </section>
 
     <section :class="[section, 'text-sm']">
       <h2 class="text-base font-semibold">Locked out?</h2>
       <p class="mt-2 text-slate-600 dark:text-slate-300">
-        Another Administrator can give you a new password or remove your authenticator, in Administrators. Or, on the Docker
-        host:
+        Another administrator can set a new password for you or remove your authenticator, under Administrators. Or run
+        one of these on the Docker host:
       </p>
       <pre class="mt-2 overflow-x-auto rounded-md bg-slate-100 p-3 font-mono text-xs dark:bg-slate-800">docker exec authway-server authway-server reset-admin-password {{ session.me?.username }}
 docker exec authway-server authway-server reset-admin-mfa {{ session.me?.username }}</pre>

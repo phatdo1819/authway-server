@@ -33,6 +33,8 @@ type Portal struct {
 	log     *slog.Logger
 	devPeer netip.Addr
 	limiter *limiter
+	// the status is asked more often, by the page and the apps that wait for the login
+	statusLimiter *limiter
 }
 
 func New(service *core.Service, options Options) *Portal {
@@ -40,8 +42,11 @@ func New(service *core.Service, options Options) *Portal {
 		options.Log = slog.Default()
 	}
 	// 30 requests a minute for each address, 10 at once: it only stops floods, the failed logins are counted by the
-	// core for each public IP
-	return &Portal{core: service, log: options.Log, devPeer: options.DevPeer, limiter: newLimiter(30, time.Minute, 10)}
+	// core for each public IP. The status, which reads WireGuard under the lock of the core, 120 a minute, 20 at once
+	return &Portal{
+		core: service, log: options.Log, devPeer: options.DevPeer,
+		limiter: newLimiter(30, time.Minute, 10), statusLimiter: newLimiter(120, time.Minute, 20),
+	}
 }
 
 func (p *Portal) Handler() http.Handler {
@@ -50,7 +55,7 @@ func (p *Portal) Handler() http.Handler {
 		panic(err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/status", p.status)
+	mux.HandleFunc("GET /api/status", p.limitedBy(p.statusLimiter, p.status))
 	mux.HandleFunc("POST /api/login", p.limited(p.login))
 	mux.HandleFunc("POST /api/logout", p.logout)
 	mux.HandleFunc("POST /api/device-key", p.limited(p.deviceKey))
@@ -125,9 +130,13 @@ func (p *Portal) deviceKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Portal) limited(next http.HandlerFunc) http.HandlerFunc {
+	return p.limitedBy(p.limiter, next)
+}
+
+func (p *Portal) limitedBy(l *limiter, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		address, _ := p.client(r)
-		if !p.limiter.allow(address, time.Now()) {
+		if !l.allow(address, time.Now()) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too_many_requests", "retry_after": 10})
 			return
 		}

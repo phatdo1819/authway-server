@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 
 import { api, type AdminAccount } from '../api'
 import UiBadge from '../components/UiBadge.vue'
+import UiStatus from '../components/UiStatus.vue'
 import UiButton from '../components/UiButton.vue'
 import UiMenu, { type MenuItem } from '../components/UiMenu.vue'
 import UiNotice from '../components/UiNotice.vue'
@@ -60,7 +61,7 @@ function menu(admin: AdminAccount): MenuItem[] {
       action: async () => {
         const ok = await confirm(
           `Remove the authenticator of ${admin.username}?`,
-          'For an administrator who lost the phone. They are logged out; the next login asks only for the password, and sets up a new authenticator when the settings require one.',
+          'Use this when an administrator has lost their phone. They are logged out, and their next login asks only for a password. If settings require an authenticator, they set up a new one at that login.',
           'Remove',
         )
         if (ok) {
@@ -80,7 +81,7 @@ function menu(admin: AdminAccount): MenuItem[] {
     icon: 'trash',
     danger: true,
     action: async () => {
-      const ok = await confirm(`Delete ${admin.username}?`, "They are logged out now. This can't be undone.", 'Delete administrator')
+      const ok = await confirm(`Delete ${admin.username}?`, "They'll be logged out immediately. This can't be undone.", 'Delete administrator')
       if (ok) {
         try {
           await api.deleteAdmin(admin.id)
@@ -102,8 +103,8 @@ function menu(admin: AdminAccount): MenuItem[] {
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Administrators</h1>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          The people who log in on this web UI. Administrators do everything, Operators manage the users and the peers,
-          Read-only sees without changing.
+          People who can log in to this web UI. Administrators can do everything, Operators manage users and peers, and
+          Read-only accounts can view but not change anything.
         </p>
       </div>
       <UiButton variant="primary" icon="plus" @click="add">Add administrator</UiButton>
@@ -137,18 +138,16 @@ function menu(admin: AdminAccount): MenuItem[] {
             </td>
             <td class="px-4 py-3">{{ roleLabel(admin.role) }}</td>
             <td class="px-4 py-3">
-              <UiBadge :tone="admin.totp ? 'green' : 'gray'">{{ admin.totp ? 'On' : 'Off' }}</UiBadge>
+              <UiStatus :tone="admin.totp ? 'green' : 'gray'">{{ admin.totp ? 'In use' : 'None' }}</UiStatus>
             </td>
             <td class="px-4 py-3 whitespace-nowrap">
               <p>{{ ago(admin.last_login_at) }}</p>
               <p v-if="admin.last_login_from" class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ admin.last_login_from }}</p>
             </td>
             <td class="px-4 py-3">
-              <div class="flex flex-wrap gap-1.5">
-                <UiBadge v-if="admin.disabled" tone="red">Disabled</UiBadge>
-                <UiBadge v-else-if="admin.must_change_password" tone="amber">New password at next login</UiBadge>
-                <UiBadge v-else tone="gray">Active</UiBadge>
-              </div>
+              <UiStatus v-if="admin.disabled" tone="red">Disabled</UiStatus>
+              <UiStatus v-else-if="admin.must_change_password" tone="amber">New password at next login</UiStatus>
+              <UiStatus v-else tone="green">Active</UiStatus>
             </td>
             <td class="px-4 py-3 text-right">
               <UiMenu :items="menu(admin)" :label="`Actions of ${admin.username}`" />

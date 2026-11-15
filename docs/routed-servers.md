@@ -15,7 +15,9 @@ can't start a connection to one. A routed server keeps the address of each peer,
   open. A peer with access rules gets connections only from its own networks. The firewall of each device still
   decides what it accepts. Without it, the networks only answer the peers.
 - **Two ways to run it**: through the Docker host, the simpler one, or with an address of its own for the container.
-  The **?** next to the setting in the web UI explains NAT and routed with a drawing.
+  The **?** next to the setting in the web UI explains NAT and routed with a drawing, with the addresses of the
+  server and the route its router needs once a routed server shows the address of Authway Server in that network;
+  until then with example addresses. Turning a server routed gives that route too.
 
 ## Through the Docker host
 
@@ -45,7 +47,11 @@ The same goes for compose.macvlan.yaml.
 - **The helper** (the container `authway-host-routes`) changes only its own routes, `ip route show proto 77`, and,
   for a server whose networks start connections to its peers, its own rules in the chain `DOCKER-USER` of Docker,
   comment `authway-server`: Docker blocks the connections started from outside otherwise. It refuses a tunnel network
-  that overlaps a network of the host or that the host already has a route to, and the server shows why. A route goes
+  that overlaps a network of the host or that the host already has a route to, and the server shows why. It routes
+  only private IPv4 and unique local IPv6 (`fc00::/7`, what the server suggests) tunnel networks: a public one, a
+  global IPv6 prefix of your provider say, needs `AUTHWAY_ROUTE_PUBLIC=2001:db8:1::/48` in the `.env` of the Docker
+  host, networks separated by commas. The container can't change it, so it can't send other destinations of the
+  internet to itself. A route goes
   when its server isn't routed any more, and all of them when the helper stops. It needs `NET_ADMIN` on the network
   of the host: that's why it's in a file of its own. It shares with Authway Server only a folder in memory.
 - **The answers come back through the router**: the computers send what they have for the peers to their router,

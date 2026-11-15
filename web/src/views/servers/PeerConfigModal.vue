@@ -41,19 +41,19 @@ function save() {
 </script>
 
 <template>
-  <UiModal :open="peer !== null" :title="`Configuration of ${peer?.name ?? ''}`" wide @close="emit('close')">
+  <UiModal :open="peer !== null" :title="`Configuration for ${peer?.name ?? ''}`" wide @close="emit('close')">
     <div class="space-y-4">
       <UiNotice tone="warning">
-        The file and the QR code hold the private key of the peer: whoever has them can connect as this peer. Give them
-        only to its user.
+        The file and QR code contain this peer's private key. Anyone who has them can connect as this peer, so only give
+        them to its user.
       </UiNotice>
       <p v-if="server.auth_mode !== 'key'">
-        After connecting, the user logs in with Authway, or on
+        After connecting, the user logs in with the Authway app, or by opening
         <span class="font-mono">{{ server.login_url }}</span> in a browser.
       </p>
       <div v-if="showQr && file" class="space-y-2 text-center">
-        <QrCode :text="file.text" :label="`QR code of the configuration of ${peer?.name}`" />
-        <p class="text-xs text-slate-500">Scan it with the WireGuard app of the phone: Add a tunnel, then Scan from QR code.</p>
+        <QrCode :text="file.text" :label="`QR code with the configuration for ${peer?.name}`" />
+        <p class="text-xs text-slate-500">In the WireGuard app on the phone, tap Add a tunnel, then Scan from QR code.</p>
       </div>
     </div>
     <template #footer>

@@ -146,15 +146,17 @@ type AlertView struct {
 }
 
 type UserView struct {
-	ID        int64    `json:"id"`
-	Username  string   `json:"username"`
-	FullName  string   `json:"full_name"`
-	Disabled  bool     `json:"disabled"`
-	TOTP      bool     `json:"totp"`
-	Peers     []string `json:"peers"`
-	Sessions  int      `json:"sessions"`
-	CreatedAt int64    `json:"created_at"`
-	UpdatedAt int64    `json:"updated_at"`
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	FullName string `json:"full_name"`
+	Disabled bool   `json:"disabled"`
+	TOTP     bool   `json:"totp"`
+	// when a code of the authenticator first worked, 0 while nobody has shown that the key was scanned
+	TOTPConfirmedAt int64    `json:"totp_confirmed_at"`
+	Peers           []string `json:"peers"`
+	Sessions        int      `json:"sessions"`
+	CreatedAt       int64    `json:"created_at"`
+	UpdatedAt       int64    `json:"updated_at"`
 	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
 	// made since refuses the save. UpdatedBy made the latest one
 	Version   int64  `json:"version"`
@@ -442,7 +444,8 @@ func (s *Service) userViewsLocked(users []store.User) ([]UserView, error) {
 	for _, user := range users {
 		view := UserView{
 			ID: user.ID, Username: user.Username, FullName: user.FullName, Disabled: user.Disabled,
-			TOTP: user.TOTPSecret != "", Peers: []string{}, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
+			TOTP: user.TOTPSecret != "", TOTPConfirmedAt: user.TOTPConfirmedAt, Peers: []string{},
+			CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
 			Version: user.Version, UpdatedBy: user.UpdatedBy,
 		}
 		for _, peer := range peers {

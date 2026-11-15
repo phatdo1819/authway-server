@@ -215,6 +215,9 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 		}
 	}
 	serverID, peerID, hash, generation := server.ID, peer.ID, user.PasswordHash, s.generation
+	// counted as a failure until it ends: attempts sent together all see it
+	failures := s.failures
+	failures.begin(peerID, endpoint)
 	s.mu.Unlock()
 
 	// the password check takes a while, out of the lock; the username is the one of the user of the peer
@@ -232,6 +235,8 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// the counter it was added to: a restore replaces it
+	failures.end(peerID, endpoint)
 	// the configuration could have changed during the check
 	server, peer, ok = s.findPeerLocked(address, host)
 	if !ok || server.ID != serverID || peer.ID != peerID || (server.AuthMode == store.AuthPasswordOTP) != withOTP ||
@@ -244,7 +249,9 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 		return fail(403, "blocked")
 	}
 	current, err := s.db.Q().User(peer.UserID)
-	if err != nil || current.ID != user.ID || current.PasswordHash != hash || current.Disabled {
+	// a new key during the check: the code was of the old one
+	if err != nil || current.ID != user.ID || current.PasswordHash != hash || current.Disabled ||
+		(withOTP && current.TOTPSecret != user.TOTPSecret) {
 		valid = false
 	}
 	if valid && withOTP && s.codeUsedLocked(user.ID, counter, now) {
@@ -265,6 +272,12 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 		return fail(401, "device_mismatch")
 	}
 	s.failures.success(peer.ID, endpoint)
+	// the first code that works shows the key was scanned
+	if withOTP && current.TOTPConfirmedAt == 0 {
+		if err := s.db.Q().ConfirmUserTOTP(user.ID, now.Unix()); err != nil {
+			s.log.Warn("can't record the first code of an authenticator", "user", user.Username, "error", err)
+		}
+	}
 	expires, err := s.openSessionLocked(server, peer, user, endpoint)
 	if err != nil {
 		s.log.Error("can't open the gate", "peer", peer.Name, "error", err)
@@ -354,6 +367,7 @@ func (s *Service) codeUsedLocked(userID int64, counter uint64, now time.Time) bo
 		return true
 	}
 	codes[counter] = now
+	s.saveUsedCodesLocked()
 	return false
 }
 

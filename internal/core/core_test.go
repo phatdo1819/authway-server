@@ -331,13 +331,95 @@ func TestLoginWithCode(t *testing.T) {
 	if a := f.s.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: "000000"}); a.Status != 401 {
 		t.Fatalf("a wrong code: %+v", a)
 	}
+	if user, _ := f.s.db.Q().User(alice.ID); user.TOTPConfirmedAt != 0 {
+		t.Fatalf("confirmed before a code worked: %+v", user)
+	}
 	if a := f.s.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: code}); a.Status != 200 {
 		t.Fatalf("the right code: %+v", a)
+	}
+	if user, _ := f.s.db.Q().User(alice.ID); user.TOTPConfirmedAt != f.clock.now.Unix() {
+		t.Fatalf("not confirmed by the login: %+v", user)
 	}
 	f.s.Logout(address, "10.8.0.1")
 	if a := f.s.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: code}); a.Status != 401 {
 		t.Fatalf("a code used twice: %+v", a)
 	}
+	// a restart doesn't forget the codes used
+	again, err := New(f.db, f.net, Options{LoginPort: 8181, Now: f.clock.Now, Log: f.s.log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := again.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: code}); a.Status != 401 {
+		t.Fatalf("a code used before a restart: %+v", a)
+	}
+	f.clock.advance(totp.Period * time.Second)
+	next, _ := totp.Code(setupTOTP.Secret, uint64(f.clock.now.Unix())/totp.Period)
+	if a := again.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: next}); a.Status != 200 {
+		t.Fatalf("a new code after a restart: %+v", a)
+	}
+	// the codes too old to work are dropped
+	f.clock.advance(usedCodeLife + time.Second)
+	later, err := New(f.db, f.net, Options{LoginPort: 8181, Now: f.clock.Now, Log: f.s.log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(later.usedCodes) != 0 {
+		t.Fatalf("old codes kept: %+v", later.usedCodes)
+	}
+}
+
+// An administrator checks a code from the app of the user: the key counts as in use, the code still works for the
+// login. A key in use, or no key, can't be checked; a new key waits again.
+func TestCheckTOTP(t *testing.T) {
+	f := setup(t)
+	alice := f.user("alice")
+	if _, err := f.s.CheckTOTP(testActor, alice.ID, "123456"); fieldOf(err) != "no_otp" {
+		t.Fatalf("without a key: %v", err)
+	}
+	setupTOTP, err := f.s.SetupTOTP(testActor, alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(setupTOTP.Secret, uint64(f.clock.now.Unix())/totp.Period)
+	wrong := "000000"
+	if code == wrong {
+		wrong = "111111"
+	}
+	if _, err := f.s.CheckTOTP(testActor, alice.ID, wrong); fieldOf(err) != "invalid_otp" {
+		t.Fatalf("a wrong code: %v", err)
+	}
+	view, err := f.s.CheckTOTP(testActor, alice.ID, code)
+	if err != nil || view.TOTPConfirmedAt != f.clock.now.Unix() || view.Version != 2 {
+		t.Fatalf("the right code: %+v %v", view, err)
+	}
+	if _, err := f.s.CheckTOTP(testActor, alice.ID, code); fieldOf(err) != "otp_in_use" {
+		t.Fatalf("a key in use: %v", err)
+	}
+	// the code checked isn't spent: the user logs in with it
+	server := f.server(store.AuthPasswordOTP)
+	peer := f.peer(server, alice)
+	f.handshake(peer, "203.0.113.7")
+	if a := f.s.Login(netip.MustParseAddr("10.8.0.2"), "10.8.0.1", LoginRequest{Username: "alice", Password: "Secret,1234", OTP: code}); a.Status != 200 {
+		t.Fatalf("the login with the code checked: %+v", a)
+	}
+	if _, err := f.s.SetupTOTP(testActor, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if user, _ := f.s.db.Q().User(alice.ID); user.TOTPConfirmedAt != 0 {
+		t.Fatalf("a new key counts as used: %+v", user)
+	}
+}
+
+// fieldOf is the code of the first field of a validation error, "" for another error
+func fieldOf(err error) string {
+	var invalid *ValidationError
+	if !errors.As(err, &invalid) {
+		return ""
+	}
+	for _, code := range invalid.Fields {
+		return code
+	}
+	return ""
 }
 
 func TestLockout(t *testing.T) {

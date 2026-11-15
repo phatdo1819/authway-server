@@ -10,6 +10,11 @@
   before a firewall such as ufw.
 - **The web UI is for your local network**: don't forward 8443 from the internet. To use your own certificate,
   replace `data/tls/cert.pem` and `data/tls/key.pem`: no restart needed.
+- **Behind a reverse proxy with HTTPS**: set `AUTHWAY_ADMIN_TLS=false` and `AUTHWAY_TRUSTED_PROXIES` to the address
+  of the proxy, as seen by the container (addresses or networks, separated by commas). From it, `X-Forwarded-For`
+  gives the address of the browser, for the failed logins and the events, and `X-Forwarded-Proto: https` keeps the
+  cookie for HTTPS only. Without it, every browser looks like the proxy: 10 failed logins from anyone lock everyone
+  out for 15 minutes.
 - **The container has no right but NET_ADMIN**, for the WireGuard interfaces and the firewall rules inside its own
   network: compose.yaml drops all the others, forbids gaining new ones and makes its system read-only, so it writes
   only in `./data` and a `/tmp` in memory. Docker creates `./data` for root; a folder made by another user before
@@ -112,8 +117,9 @@
 - **Last handshake, or Seen**: WireGuard forgets the handshakes when Authway Server starts again, at an upgrade say.
   Until a peer connects again, its row shows *Seen* and the time and public IP from the connection history; *never*
   only for a peer that never connected.
-- **The strict lock and phones**: a phone that moves from Wi-Fi to 4G gets a new public IP, so its session pauses
-  and the user logs in again. Choose *Roaming* for the servers of devices that move a lot.
+- **The lock to the public IP and phones**: a phone that moves from Wi-Fi to 4G gets a new public IP, so its session
+  pauses and the user logs in again. Turn the lock off for the servers of devices that move a lot: the session then
+  follows the device, but a copy used while the real device is off keeps it.
 - **Two devices behind the same NAT** share a public IP: the lock and the detection can't tell them apart. The same for
   two devices of one IPv6 network: their addresses count by their `/64`, since a device changes its own IPv6 address
   in its network over the day.

@@ -177,6 +177,15 @@ func TestLimiter(t *testing.T) {
 	if limited == 0 {
 		t.Error("15 logins at once all reach the password check")
 	}
+	// the status has a limit of its own, higher: 20 at once pass, a flood doesn't
+	statuses := map[int]int{}
+	for range 30 {
+		w, _ := request(h, "GET", "/api/status", "10.8.0.1", "", "")
+		statuses[w.Code]++
+	}
+	if statuses[200] < 20 || statuses[429] == 0 {
+		t.Errorf("30 statuses at once: %v", statuses)
+	}
 }
 
 // Device binding over HTTP, as Authway does it: the status gives the challenge, the login carries the proof, the

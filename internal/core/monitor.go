@@ -100,7 +100,7 @@ func (s *Service) Tick() {
 	// the codes of a period stay valid for Skew periods after it
 	for user, codes := range s.usedCodes {
 		for counter, at := range codes {
-			if now.Sub(at) > 3*time.Minute {
+			if now.Sub(at) > usedCodeLife {
 				delete(codes, counter)
 			}
 		}

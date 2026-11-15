@@ -22,7 +22,7 @@ async function save() {
   errors.value = {}
   error.value = ''
   if (password.value !== again.value) {
-    errors.value = { again: 'The two passwords differ.' }
+    errors.value = { again: "The passwords don't match." }
     return
   }
   busy.value = true
@@ -49,7 +49,7 @@ async function save() {
   <form class="space-y-4" novalidate @submit.prevent="save">
     <UiInput v-model="current" label="Current password" type="password" autocomplete="current-password" :error="errors.current" />
     <UiInput v-model="password" label="New password" type="password" autocomplete="new-password" :error="errors.password" :helper="helper" />
-    <UiInput v-model="again" label="Type it again" type="password" autocomplete="new-password" :error="errors.again" />
+    <UiInput v-model="again" label="Confirm new password" type="password" autocomplete="new-password" :error="errors.again" />
     <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     <div class="flex justify-end">
       <UiButton type="submit" variant="primary" :loading="busy">Change password</UiButton>

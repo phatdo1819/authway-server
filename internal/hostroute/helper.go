@@ -69,6 +69,9 @@ type Helper struct {
 	now  func() time.Time
 	// the bridges of the container: the helper changes routes and rules on them only
 	bridges map[string]bool
+	// Public are the public tunnel networks the helper routes too, IPv4 or global IPv6: set by the Docker host, out of
+	// reach of the container. Without them, only the private IPv4 and the unique local IPv6 tunnels
+	Public []netip.Prefix
 }
 
 func NewHelper(dir string, host Host, log *slog.Logger) *Helper {
@@ -207,13 +210,13 @@ func (h *Helper) findBridge(via netip.Addr) viaInfo {
 	hop, err := h.host.RouteGet(via)
 	switch {
 	case err != nil:
-		return viaInfo{problem: "can't find the container on the Docker host: " + err.Error()}
+		return viaInfo{problem: "can't find the container from the Docker host: " + err.Error()}
 	case hop.Type != "" && hop.Type != "unicast":
 		return viaInfo{problem: via.String() + " is an address of the Docker host, not of the container"}
 	case hop.Gateway.IsValid():
-		return viaInfo{problem: "the container isn't on a network of the Docker host: " + via.String() + " is through " + hop.Gateway.String()}
+		return viaInfo{problem: "the container isn't on a network of the Docker host: " + via.String() + " is reached through " + hop.Gateway.String()}
 	case !h.host.IsBridge(hop.Dev):
-		return viaInfo{problem: "the container isn't on a Docker bridge: " + via.String() + " is on " + hop.Dev + ", the router reaches it directly"}
+		return viaInfo{problem: "the container isn't on a Docker bridge: " + via.String() + " is on " + hop.Dev + ", so the router can reach it directly"}
 	}
 	return viaInfo{bridge: hop.Dev}
 }
@@ -222,25 +225,28 @@ func (h *Helper) findBridge(via netip.Addr) viaInfo {
 // isn't of the helper.
 func (h *Helper) conflict(tunnel netip.Prefix, via netip.Addr) string {
 	if tunnel.Bits() == 0 {
-		return "the whole internet can't go to the container"
+		return "the whole internet can't be routed to the container"
 	}
 	if tunnel.Contains(via) {
-		return "the tunnel network holds the address of the container"
+		return "the VPN network includes the container's own address"
+	}
+	if problem := h.notATunnel(tunnel); problem != "" {
+		return problem
 	}
 	ipv6 := via.Is6()
 	locals, err := h.host.LocalNetworks(ipv6)
 	if err != nil {
-		return "can't read the networks of the Docker host: " + err.Error()
+		return "can't read the Docker host's networks: " + err.Error()
 	}
 	for _, local := range locals {
 		if local.Overlaps(tunnel) {
-			return fmt.Sprintf("the tunnel network %s overlaps %s, a network of the Docker host", tunnel, local)
+			return fmt.Sprintf("the VPN network %s overlaps %s, one of the Docker host's networks", tunnel, local)
 		}
 	}
 	all, err1 := h.host.Routes(ipv6, false)
 	owned, err2 := h.host.Routes(ipv6, true)
 	if err := errors.Join(err1, err2); err != nil {
-		return "can't read the routes of the Docker host: " + err.Error()
+		return "can't read the Docker host's routes: " + err.Error()
 	}
 	for _, entry := range all {
 		if entry.Dst == tunnel && !contains(owned, entry) {
@@ -252,6 +258,53 @@ func (h *Helper) conflict(tunnel netip.Prefix, via netip.Addr) string {
 		}
 	}
 	return ""
+}
+
+// the IPv4 ranges a tunnel network can be in: the private ones, and the shared space of carriers
+var privateIPv4 = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("100.64.0.0/10"),
+}
+
+// the unique local IPv6 addresses, the private ones of IPv6
+var uniqueLocal = netip.MustParsePrefix("fc00::/7")
+
+// within tells whether a network is inside one of a list
+func within(tunnel netip.Prefix, list []netip.Prefix) bool {
+	for _, outer := range list {
+		if outer.Bits() <= tunnel.Bits() && outer.Contains(tunnel.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// notATunnel says why a network isn't one the helper routes: the wanted file comes from the container, and a
+// container taken over must not send chosen destinations of the internet to itself. A tunnel has the size the server
+// allows, IPv4 /16 to /29 and IPv6 /64 to /120, and is private (IPv4) or unique local (IPv6), or inside a network of
+// Public, which only the Docker host sets.
+func (h *Helper) notATunnel(tunnel netip.Prefix) string {
+	tunnel = tunnel.Masked()
+	address := tunnel.Addr()
+	if address.Is4() {
+		if tunnel.Bits() < 16 || tunnel.Bits() > 29 {
+			return fmt.Sprintf("%s isn't a valid VPN network: IPv4 networks must be /16 to /29", tunnel)
+		}
+		if within(tunnel, privateIPv4) || within(tunnel, h.Public) {
+			return ""
+		}
+		return fmt.Sprintf("%s isn't a private network. The Docker host only routes a public VPN network to the container if it's listed in the helper's AUTHWAY_ROUTE_PUBLIC", tunnel)
+	}
+	if tunnel.Bits() < 64 || tunnel.Bits() > 120 {
+		return fmt.Sprintf("%s isn't a valid VPN network: IPv6 networks must be /64 to /120", tunnel)
+	}
+	if address.Is4In6() || address.Zone() != "" || !address.IsGlobalUnicast() {
+		return fmt.Sprintf("%s isn't a valid VPN network: IPv6 networks must be global or unique local", tunnel)
+	}
+	if within(tunnel, []netip.Prefix{uniqueLocal}) || within(tunnel, h.Public) {
+		return ""
+	}
+	return fmt.Sprintf("%s isn't a unique local network. The Docker host only routes a global IPv6 VPN network to the container if it's listed in the helper's AUTHWAY_ROUTE_PUBLIC", tunnel)
 }
 
 func contains(entries []Entry, entry Entry) bool {
@@ -313,7 +366,7 @@ func (h *Helper) applyRoutes(ipv6 bool, wanted []wantedRoute, states []State) {
 	owned, err := h.host.Routes(ipv6, true)
 	if err != nil {
 		for _, route := range wanted {
-			states[route.index].Error = "can't read the routes of the Docker host: " + err.Error()
+			states[route.index].Error = "can't read the Docker host's routes: " + err.Error()
 		}
 		return
 	}

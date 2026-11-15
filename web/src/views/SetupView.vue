@@ -38,15 +38,15 @@ async function logout() {
         </h1>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
           <template v-if="session.me?.setup === 'mfa'">
-            Every administrator logs in with a code of an authenticator app too: set yours up to go on.
+            Administrators also need a code from an authenticator app to log in. Set yours up to continue.
           </template>
           <template v-else>
-            The current password of <span class="font-medium">{{ session.me?.username }}</span> was given to you: choose one that only you know.
+            Someone else set the password for <span class="font-medium">{{ session.me?.username }}</span>. Choose a new one that only you know.
           </template>
         </p>
       </div>
       <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <AuthenticatorSetup v-if="session.me?.setup === 'mfa'" @done="next('Authenticator set up. The next logins ask for its code.')" />
+        <AuthenticatorSetup v-if="session.me?.setup === 'mfa'" @done="next(`Authenticator set up. You'll need a code from it each time you log in.`)" />
         <ChangePasswordForm v-else @done="next('Password changed.')" />
       </section>
       <button

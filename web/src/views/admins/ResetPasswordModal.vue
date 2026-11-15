@@ -43,7 +43,7 @@ async function save() {
   busy.value = true
   try {
     await api.resetAdminPassword(props.admin.id, password.value)
-    notify(`New password of ${props.admin.username} saved: they choose their own at the next login.`)
+    notify(`New password for ${props.admin.username} saved. They'll choose their own at their next login.`)
     emit('saved')
   } catch (e) {
     error.value = e instanceof ApiError && e.code === 'validation' ? fieldMessage(e.fields.password) : errorMessage(e)
@@ -57,11 +57,12 @@ async function save() {
   <UiModal :open="admin !== null" :title="`New password for ${admin?.username ?? ''}`" @close="emit('close')">
     <form id="reset-password" class="space-y-4 text-sm" novalidate @submit.prevent="save">
       <p>
-        Give this password to {{ admin?.username }}: the web UI asks for a new one at the next login. Their sessions end now.
+        Give this password to {{ admin?.username }}. They'll be asked to choose a new one at their next login, and they're
+        logged out now.
       </p>
       <UiInput v-model="password" label="New password" autocomplete="off" mono :helper="policyText(session.me?.password_policy, true)" />
       <div class="flex gap-2">
-        <UiButton size="sm" icon="refresh" @click="password = generatePassword(session.me?.password_policy, true)">Another one</UiButton>
+        <UiButton size="sm" icon="refresh" @click="password = generatePassword(session.me?.password_policy, true)">Generate another</UiButton>
         <UiButton size="sm" icon="copy" @click="copy">Copy</UiButton>
       </div>
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>

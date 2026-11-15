@@ -29,22 +29,22 @@ const taken = computed(() => (checked.value?.rows ?? []).filter((row) => row.err
 const input = ref<HTMLInputElement | null>(null)
 
 const columns = [
-  { name: 'username', text: 'Letters, digits and . _ @ -, as in Add user.' },
+  { name: 'username', text: 'Letters, digits and . _ @ - only, the same as in Add user.' },
   { name: 'full_name', text: 'Optional.' },
-  { name: 'password', text: 'Optional: without one, a password that follows the policy is made, and shown once after the import.' },
+  { name: 'password', text: 'Optional. If empty, a password that meets the policy is generated and shown once after the import.' },
 ]
 
 // what a file-wide error means, with the name of the column when there is one
 const csvMessages: Record<string, (detail: string) => string> = {
-  too_large: () => 'The file is larger than 512 KB: split it.',
+  too_large: () => 'The file is larger than 512 KB. Split it into smaller files.',
   not_utf8: () => 'Save the file as CSV UTF-8, then choose it again.',
   empty: () => 'The file is empty.',
-  invalid: (detail) => `This isn't a CSV file the import can read${detail ? `: ${detail}` : ''}.`,
+  invalid: (detail) => `This file couldn't be read as CSV${detail ? `: ${detail}` : ''}.`,
   unknown_column: (detail) => `Unknown column "${detail}". The columns are username, full_name and password.`,
   duplicate_column: (detail) => `The column "${detail}" appears twice.`,
-  no_username: () => 'The first line, the header, needs a username column.',
-  too_many_rows: () => 'At most 500 rows in one file: split it.',
-  no_rows: () => 'The file has a header, but no row under it.',
+  no_username: () => 'The header (the first line) needs a username column.',
+  too_many_rows: () => 'A file can have at most 500 rows. Split it into smaller files.',
+  no_rows: () => 'The file has a header but no rows.',
 }
 
 const columnNames: Record<string, string> = {
@@ -111,7 +111,7 @@ function fileError(e: unknown): string {
 
 async function check() {
   if (!text.value.trim()) {
-    error.value = 'Choose a file, or paste its rows.'
+    error.value = 'Choose a file or paste its rows.'
     return
   }
   busy.value = true
@@ -134,7 +134,7 @@ async function runImport() {
     if (!answer.imported) {
       // a user added by another administrator since the check: the rows say which
       checked.value = answer
-      error.value = 'Something changed since the check: nothing is imported. See the rows below.'
+      error.value = 'Something changed since the check, so nothing was imported. See the rows below.'
       return
     }
     result.value = answer
@@ -160,8 +160,8 @@ async function close() {
   if (step.value === 'done' && result.value?.passwords?.length) {
     // the passwords made are gone once closed
     const ok = await confirm(
-      'Close without the passwords?',
-      "The passwords made for the new users aren't shown again. Download them first, unless you already did.",
+      'Close without saving the passwords?',
+      "The generated passwords won't be shown again. Download them first, unless you already have.",
       'Close',
     )
     if (!ok) {
@@ -177,8 +177,9 @@ async function close() {
     <!-- the file -->
     <div v-if="step === 'file'" class="space-y-4">
       <p>
-        From a CSV file, made with a spreadsheet: each row adds a user, as Add user does. The first line names the
-        columns, in any order. Nothing is added before you see each row. Then give each user a peer on its server.
+        Add users from a CSV file, for example one saved from a spreadsheet. Each row adds one user. The first line names
+        the columns, in any order. You'll review every row before anything is added. Afterwards, give each user a peer on
+        their server.
       </p>
       <dl class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
         <div v-for="column in columns" :key="column.name" class="grid gap-1 px-3 py-2 sm:grid-cols-[7rem_1fr]">
@@ -198,19 +199,19 @@ async function close() {
           v-model="text"
           rows="7"
           spellcheck="false"
-          aria-label="The rows of the file"
+          aria-label="CSV rows"
           placeholder="username,full_name,password&#10;alice,Alice Martin,"
           class="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs shadow-sm outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-600/25 dark:border-slate-600 dark:bg-slate-900"
         />
         <UiButton class="mt-2" size="sm" :loading="busy" @click="check">Check</UiButton>
       </details>
       <p class="text-xs text-slate-500 dark:text-slate-400">
-        Excel: <em>File › Save As › CSV UTF-8</em>. Commas, semicolons and tabs all work. At most 500 rows.
+        In Excel, use <em>File › Save As › CSV UTF-8</em>. Commas, semicolons and tabs all work. Up to 500 rows.
       </p>
       <UiToggle
         v-model="skip"
-        label="Skip the users that already exist"
-        description="Their rows are skipped, and nothing about them changes, their password neither. Without it, they stop the import."
+        label="Skip users that already exist"
+        description="Existing users are left unchanged, including their passwords. If this is off, existing users stop the import."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </div>
@@ -218,21 +219,21 @@ async function close() {
     <!-- the rows checked -->
     <div v-else-if="step === 'check' && checked" class="space-y-4">
       <UiNotice v-if="checked.invalid" tone="error">
-        {{ checked.invalid }} {{ checked.invalid === 1 ? 'row needs' : 'rows need' }} a change: nothing is imported until
-        the file is right. Change it in the spreadsheet, then choose it again.
+        {{ checked.invalid }} {{ checked.invalid === 1 ? 'row needs' : 'rows need' }} fixing. Nothing is imported until the
+        file is correct. Fix it in the spreadsheet, then choose it again.
         <template v-if="taken && !skip">
-          {{ taken === checked.invalid ? 'All of them are' : `${taken} of them are` }} users that already exist:
+          {{ taken === checked.invalid ? 'All of them are' : `${taken} of them are` }} existing users. You can
           <button type="button" class="font-medium underline" @click="skip = true">skip them</button>.
         </template>
       </UiNotice>
-      <UiNotice v-else-if="!checked.users" tone="warning">Nothing to add: every user of the file already exists.</UiNotice>
+      <UiNotice v-else-if="!checked.users" tone="warning">Nothing to add. Every user in the file already exists.</UiNotice>
       <UiNotice v-else tone="info">
-        Ready: {{ users(checked.users) }}, enabled.
+        Ready to add {{ users(checked.users) }}, enabled.
         <template v-if="checked.skipped">
-          {{ users(checked.skipped) }} already there {{ checked.skipped === 1 ? 'is' : 'are' }} skipped.
+          {{ users(checked.skipped) }} already {{ checked.skipped === 1 ? 'exists and is' : 'exist and are' }} skipped.
         </template>
       </UiNotice>
-      <UiToggle v-model="skip" label="Skip the users that already exist" />
+      <UiToggle v-model="skip" label="Skip users that already exist" />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
       <div class="max-h-96 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
         <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
@@ -256,7 +257,7 @@ async function close() {
                 <p v-if="row.full_name" class="text-slate-500 dark:text-slate-400">{{ row.full_name }}</p>
               </td>
               <td class="px-3 py-2" :class="{ 'text-slate-600 dark:text-slate-300': !row.skipped }">
-                {{ row.skipped ? '—' : row.password === 'given' ? 'From the file' : 'Made at the import' }}
+                {{ row.skipped ? '—' : row.password === 'given' ? 'From the file' : 'Generated' }}
               </td>
               <td class="px-3 py-2">
                 <ul v-if="row.errors" class="space-y-0.5 text-rose-700 dark:text-rose-300">
@@ -277,12 +278,12 @@ async function close() {
     <!-- imported -->
     <div v-else-if="step === 'done' && result" class="space-y-4">
       <UiNotice tone="info">
-        Added {{ users(result.users) }}<template v-if="result.skipped">, skipped {{ result.skipped }} already there</template>.
-        Give each new user a peer: in WireGuard servers, Add peer, then choose the user.
+        Added {{ users(result.users) }}<template v-if="result.skipped">, skipped {{ result.skipped }} that already existed</template>.
+        Next, give each new user a peer: go to WireGuard servers, click Add peer, and choose the user.
       </UiNotice>
       <template v-if="result.passwords?.length">
-        <UiNotice tone="warning" title="The passwords made are shown only now">
-          Download them, and give each user their own, apart from the configuration file.
+        <UiNotice tone="warning" title="Generated passwords are only shown now">
+          Download them, and give each user their password separately from their configuration file.
         </UiNotice>
         <div class="max-h-64 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
           <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">

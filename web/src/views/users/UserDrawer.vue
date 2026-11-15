@@ -113,7 +113,7 @@ function useTheirs() {
         label="Username"
         autocomplete="off"
         :error="fieldMessage(errors.username)"
-        helper="Letters, digits and . _ @ -. The user types it on the login page."
+        helper="Letters, digits and . _ @ - only. The user enters this on the VPN login page."
       />
       <UiInput v-model="form.full_name" label="Full name" optional :error="fieldMessage(errors.full_name)" />
       <UiInput
@@ -123,14 +123,14 @@ function useTheirs() {
         autocomplete="new-password"
         :optional="Boolean(user)"
         :error="fieldMessage(errors.password)"
-        :helper="user ? `Leave it empty to keep the current one. A new password logs the user out. ${policy}` : policy"
+        :helper="user ? `Leave empty to keep the current password. Setting a new one logs the user out. ${policy}` : policy"
       />
       <UiInput
         v-model="confirmPassword"
-        label="Type the password again"
+        label="Confirm password"
         type="password"
         autocomplete="new-password"
-        :error="errors.confirm ? 'The two passwords differ.' : ''"
+        :error="errors.confirm ? `The passwords don't match.` : ''"
       />
       <div class="space-y-2">
         <UiButton size="sm" icon="key" @click="generate">Generate a password</UiButton>
@@ -139,13 +139,13 @@ function useTheirs() {
           <UiButton size="sm" icon="copy" @click="copyGenerated">Copy</UiButton>
         </div>
         <p v-if="generated" class="text-xs text-slate-500 dark:text-slate-400">
-          Give it to the user before saving: it isn't shown again.
+          Give this password to the user before you save. It won't be shown again.
         </p>
       </div>
       <UiToggle
         v-model="form.disabled"
         label="Disabled"
-        description="The user can't log in, and is logged out now. The peers stay."
+        description="The user is logged out now and can't log in again. Their peers are kept."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </form>

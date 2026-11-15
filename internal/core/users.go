@@ -151,6 +151,8 @@ func (s *Service) SetupTOTP(by Actor, id int64) (*TOTPSetup, error) {
 		return nil, notFound(err)
 	}
 	user.TOTPSecret = totp.NewSecret()
+	// nobody has scanned this key yet
+	user.TOTPConfirmedAt = 0
 	user.UpdatedAt, user.UpdatedBy = s.now().Unix(), by.Username
 	if err := s.db.Q().UpdateUser(user); err != nil {
 		return nil, err
@@ -162,6 +164,37 @@ func (s *Service) SetupTOTP(by Actor, id int64) (*TOTPSetup, error) {
 	return &TOTPSetup{Secret: user.TOTPSecret, URI: totp.URI(Issuer, user.Username, user.TOTPSecret)}, nil
 }
 
+// CheckTOTP checks a code from the authenticator app of a user, to show that the key was scanned: once it works, the
+// key counts as in use, as after a login with a code. Only for a key nobody has used yet: on a key in use, it would
+// let an operator try codes without the password.
+func (s *Service) CheckTOTP(by Actor, id int64, code string) (*UserView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, err := s.db.Q().User(id)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	switch {
+	case user.TOTPSecret == "":
+		return nil, &ValidationError{Fields: map[string]string{"code": "no_otp"}}
+	case user.TOTPConfirmedAt != 0:
+		return nil, &ValidationError{Fields: map[string]string{"code": "otp_in_use"}}
+	}
+	// not kept as used: the user can log in with the same code right after
+	if _, ok := totp.Verify(user.TOTPSecret, strings.TrimSpace(code), s.now()); !ok {
+		return nil, &ValidationError{Fields: map[string]string{"code": "invalid_otp"}}
+	}
+	if err := s.db.Q().ConfirmUserTOTP(id, s.now().Unix()); err != nil {
+		return nil, err
+	}
+	s.log.Info("authenticator of a user checked", "user", user.Username, "by", by.Username)
+	user, err = s.db.Q().User(id)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	return s.userViewLocked(user)
+}
+
 func (s *Service) RemoveTOTP(by Actor, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,7 +202,7 @@ func (s *Service) RemoveTOTP(by Actor, id int64) error {
 	if err != nil {
 		return notFound(err)
 	}
-	user.TOTPSecret = ""
+	user.TOTPSecret, user.TOTPConfirmedAt = "", 0
 	user.UpdatedAt, user.UpdatedBy = s.now().Unix(), by.Username
 	if err := s.db.Q().UpdateUser(user); err != nil {
 		return err

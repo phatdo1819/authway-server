@@ -165,6 +165,7 @@ func (s *Service) adminCodeUsedLocked(id int64, counter uint64, now time.Time) b
 		return true
 	}
 	codes[counter] = now
+	s.saveUsedCodesLocked()
 	return false
 }
 
@@ -580,7 +581,7 @@ func (s *Service) RemoveOwnAdminTOTP(by Actor, password string) error {
 func (s *Service) pruneAdminCodesLocked(now time.Time) {
 	for id, codes := range s.usedAdminCodes {
 		for counter, at := range codes {
-			if now.Sub(at) > 3*time.Minute {
+			if now.Sub(at) > usedCodeLife {
 				delete(codes, counter)
 			}
 		}

@@ -70,7 +70,7 @@ async function save() {
       notify(`${form.value.username} saved.`)
     } else {
       await api.createAdmin(form.value)
-      notify(`${form.value.username} added. Give them the password: they choose their own at the first login.`)
+      notify(`${form.value.username} added. Give them the password; they'll choose their own when they first log in.`)
     }
     emit('saved')
   } catch (e) {
@@ -111,7 +111,7 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
         autocomplete="off"
         :disabled="Boolean(admin)"
         :error="fieldMessage(errors.username)"
-        :helper="admin ? 'The username stays: add another administrator for another name.' : 'Letters, digits and . _ @ -.'"
+        :helper="admin ? 'Usernames can\'t be changed. To use a different name, add a new administrator.' : 'Letters, digits and . _ @ - only.'"
       />
       <UiInput v-model="form.full_name" label="Full name" optional :error="fieldMessage(errors.full_name)" />
       <div>
@@ -123,11 +123,11 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
       <div v-if="!admin">
         <UiInput
           v-model="form.password!"
-          label="First password"
+          label="Initial password"
           autocomplete="off"
           mono
           :error="fieldMessage(errors.password)"
-          :helper="`Give it to them: they choose their own at the first login. ${policyText(session.me?.password_policy, true)}`"
+          :helper="`Give this to them. They'll choose their own when they first log in. ${policyText(session.me?.password_policy, true)}`"
         />
         <div class="mt-2 flex gap-2">
           <UiButton size="sm" icon="refresh" @click="regenerate">New password</UiButton>
@@ -138,7 +138,7 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
         v-if="admin && !own"
         v-model="form.disabled"
         label="Disabled"
-        description="The administrator can't log in, and is logged out now."
+        description="The administrator is logged out now and can't log in again."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </form>

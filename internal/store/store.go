@@ -184,6 +184,31 @@ var migrations = []string{
 	ALTER TABLE servers ADD COLUMN updated_by TEXT NOT NULL DEFAULT '';
 	ALTER TABLE admins ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 	ALTER TABLE admins ADD COLUMN updated_by TEXT NOT NULL DEFAULT '';`,
+	// 10: when a code of the authenticator of a user first worked: 0 while nobody has shown the key was scanned. A
+	// key of before counts as used when its user had a session on a server that asks for a code since it was made
+	// (the latest user_mfa_on event, when the history still has it)
+	`ALTER TABLE users ADD COLUMN totp_confirmed_at INTEGER NOT NULL DEFAULT 0;
+	UPDATE users SET totp_confirmed_at = COALESCE((
+		SELECT MAX(sessions.started_at) FROM sessions JOIN servers ON servers.id = sessions.server_id
+		WHERE sessions.user_id = users.id AND servers.auth_mode = 'password_otp'
+		AND sessions.started_at >= COALESCE((
+			SELECT MAX(events.at) FROM events
+			WHERE events.kind = 'user_mfa_on' AND events.username = users.username COLLATE NOCASE), 0)
+	), 0) WHERE totp_secret != '';`,
+	// 11: the browsers where an administrator chose to be remembered: the password is enough there, without a code of
+	// the authenticator, until expires_at. bound is a fingerprint of the password and the authenticator of when it was
+	// remembered: a new one of either ends it.
+	`CREATE TABLE admin_devices (
+		id INTEGER PRIMARY KEY,
+		admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+		token_hash TEXT NOT NULL UNIQUE,
+		bound TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		last_used_from TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX admin_devices_admin ON admin_devices(admin_id);`,
 }
 
 // Store is safe for concurrent use: database/sql serializes on its single connection.
@@ -285,6 +310,11 @@ func (s *Store) migrate() error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+	}
+	// the lock mode off of up to 0.2.0 is roaming now, in the database too: everything reads the same value, and the
+	// next change of the server is audited from it. No change of the schema: the versions of before know roaming
+	if _, err := s.db.Exec("UPDATE servers SET lock_endpoint = ? WHERE lock_endpoint = ?", LockRoaming, LockOff); err != nil {
+		return fmt.Errorf("lock mode: %w", err)
 	}
 	return nil
 }

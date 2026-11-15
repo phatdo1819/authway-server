@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/phatdo1819/authway-server/internal/store"
 )
 
 type Settings struct {
@@ -18,6 +20,8 @@ type Settings struct {
 	EnrollHours int `json:"enroll_hours"`
 	// the days the ended sessions, the connections, the events and the alerts stay in Activity
 	HistoryDays int `json:"history_days"`
+	// the days an administrator who logged in with a code can log in from the same browser without one, 0 when off
+	AdminRememberDays int `json:"admin_remember_days"`
 }
 
 // SettingsInput changes the settings: a missing field keeps its value.
@@ -27,6 +31,8 @@ type SettingsInput struct {
 	RequireAdminMFA *bool           `json:"require_admin_mfa"`
 	EnrollHours     *int            `json:"enroll_hours"`
 	HistoryDays     *int            `json:"history_days"`
+	// 0 turns it off
+	AdminRememberDays *int `json:"admin_remember_days"`
 }
 
 // metaNumber is a number of the settings, or its default when it's missing or out of its range
@@ -72,7 +78,7 @@ func (s *Service) settingsLocked() (Settings, error) {
 		return Settings{}, err
 	}
 	return Settings{PublicHost: host, PasswordPolicy: s.policyLocked(), RequireAdminMFA: s.requireAdminMFALocked(),
-		EnrollHours: s.enrollHoursLocked(), HistoryDays: s.historyDaysLocked()}, nil
+		EnrollHours: s.enrollHoursLocked(), HistoryDays: s.historyDaysLocked(), AdminRememberDays: s.adminRememberDaysLocked()}, nil
 }
 
 func (s *Service) Settings() (Settings, error) {
@@ -101,6 +107,9 @@ func (s *Service) SetSettings(by Actor, input SettingsInput) (Settings, error) {
 	if input.HistoryDays != nil && (*input.HistoryDays < 1 || *input.HistoryDays > MaxHistoryDays) {
 		c.fail("history_days", "invalid")
 	}
+	if input.AdminRememberDays != nil && (*input.AdminRememberDays < 0 || *input.AdminRememberDays > MaxAdminRememberDays) {
+		c.fail("admin_remember_days", "invalid")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	actor, err := s.db.Q().Admin(by.ID)
@@ -117,49 +126,60 @@ func (s *Service) SetSettings(by Actor, input SettingsInput) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	// the values that change, written in one transaction: all of them or none
 	var changes []string
+	values := map[string]string{}
 	if input.PublicHost != nil && host != before.PublicHost {
-		if err := s.db.Q().SetMeta("public_host", host); err != nil {
-			return Settings{}, err
-		}
+		values["public_host"] = host
 		changes = append(changes, "public address")
 	}
 	if input.PasswordPolicy != nil && *input.PasswordPolicy != before.PasswordPolicy {
 		data, _ := json.Marshal(input.PasswordPolicy)
-		if err := s.db.Q().SetMeta("password_policy", string(data)); err != nil {
-			return Settings{}, err
-		}
+		values["password_policy"] = string(data)
 		changes = append(changes, "password policy")
 	}
 	if input.RequireAdminMFA != nil && *input.RequireAdminMFA != before.RequireAdminMFA {
-		value := ""
 		if *input.RequireAdminMFA {
-			value = "1"
-		}
-		if err := s.db.Q().SetMeta("require_admin_mfa", value); err != nil {
-			return Settings{}, err
-		}
-		if *input.RequireAdminMFA {
+			values["require_admin_mfa"] = "1"
 			changes = append(changes, "authenticator required for the administrators")
 		} else {
+			values["require_admin_mfa"] = ""
 			changes = append(changes, "authenticator no longer required for the administrators")
 		}
 	}
 	if input.EnrollHours != nil && *input.EnrollHours != before.EnrollHours {
-		if err := s.db.Q().SetMeta("enroll_hours", strconv.Itoa(*input.EnrollHours)); err != nil {
-			return Settings{}, err
-		}
+		values["enroll_hours"] = strconv.Itoa(*input.EnrollHours)
 		changes = append(changes, fmt.Sprintf("device enrollment %d hours", *input.EnrollHours))
 	}
 	if input.HistoryDays != nil && *input.HistoryDays != before.HistoryDays {
-		if err := s.db.Q().SetMeta("history_days", strconv.Itoa(*input.HistoryDays)); err != nil {
+		values["history_days"] = strconv.Itoa(*input.HistoryDays)
+		changes = append(changes, fmt.Sprintf("history kept %d days, was %d", *input.HistoryDays, before.HistoryDays))
+	}
+	if input.AdminRememberDays != nil && *input.AdminRememberDays != before.AdminRememberDays {
+		values[metaRememberDays] = strconv.Itoa(*input.AdminRememberDays)
+		if *input.AdminRememberDays == 0 {
+			changes = append(changes, "administrator devices no longer remembered")
+		} else {
+			changes = append(changes, fmt.Sprintf("administrator devices remembered %d days, was %d", *input.AdminRememberDays,
+				before.AdminRememberDays))
+		}
+	}
+	if len(values) > 0 {
+		err := s.db.Tx(func(tx *store.Tx) error {
+			for key, value := range values {
+				if err := tx.SetMeta(key, value); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
 			return Settings{}, err
 		}
-		changes = append(changes, fmt.Sprintf("history kept %d days, was %d", *input.HistoryDays, before.HistoryDays))
-		// fewer days: the older rows go at the next pass, not in an hour
-		if *input.HistoryDays < before.HistoryDays {
-			s.pruned = time.Time{}
-		}
+	}
+	// fewer days: the older rows go at the next pass, not in an hour
+	if input.HistoryDays != nil && *input.HistoryDays < before.HistoryDays {
+		s.pruned = time.Time{}
 	}
 	if len(changes) > 0 {
 		s.log.Info("settings changed", "by", actor.Username, "changes", strings.Join(changes, ", "))

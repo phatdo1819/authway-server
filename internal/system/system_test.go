@@ -254,7 +254,7 @@ func TestChecks(t *testing.T) {
 			t.Errorf("not ok: %+v", check)
 		}
 	}
-	if check := checkOf(t, m.Snapshot(good).Checks, "interfaces"); check.Title != "The interfaces of the 2 enabled servers are up" ||
+	if check := checkOf(t, m.Snapshot(good).Checks, "interfaces"); check.Title != "Interfaces are up on all enabled servers" ||
 		check.Detail != "wg0 (Office), wg1 (Lab)." {
 		t.Errorf("interfaces: %+v", check)
 	}
@@ -282,7 +282,7 @@ func TestChecks(t *testing.T) {
 			t.Errorf("%s: %+v, want %s", id, check, want)
 		}
 	}
-	if check := checkOf(t, list, "interfaces"); check.Detail != "Missing: wg1 (Lab); down: wg0 (Office). The peers of that server can't connect." {
+	if check := checkOf(t, list, "interfaces"); check.Detail != "Missing: wg1 (Lab); down: wg0 (Office). Peers on that server can't connect." {
 		t.Errorf("interfaces: %q", check.Detail)
 	}
 	if check := checkOf(t, list, "disk"); !strings.Contains(check.Detail, "The data folder: 3.0 GB available of 100 GB") ||
@@ -290,7 +290,7 @@ func TestChecks(t *testing.T) {
 		t.Errorf("disk: %q", check.Detail)
 	}
 	if check := checkOf(t, list, "log"); check.Title != "1 error in the log in the last hour" ||
-		check.Detail != "The latest: can't apply the configuration (error=x)" {
+		check.Detail != "Latest: can't apply the configuration (error=x)" {
 		t.Errorf("log: %+v", check)
 	}
 
@@ -369,8 +369,8 @@ func TestCertificateCheck(t *testing.T) {
 		{"self-signed", Certificate{NotAfter: c.now.AddDate(1, 0, 0), SelfSigned: true}, CheckOK, "Self-signed, until"},
 		{"own", Certificate{NotAfter: c.now.AddDate(0, 3, 0), Names: []string{"vpn.example.com"}}, CheckOK, "for vpn.example.com."},
 		{"near its end", Certificate{NotAfter: c.now.Add(20*24*time.Hour + time.Hour), Names: []string{"vpn.example.com"}}, CheckWarning, "Replace tls/cert.pem"},
-		{"self-signed not renewed", Certificate{NotAfter: c.now.Add(-time.Hour), SelfSigned: true}, CheckError, "couldn't make a new one"},
-		{"broken pair", Certificate{NotAfter: c.now.AddDate(1, 0, 0), Error: "tls: private key does not match public key"}, CheckError, "The one before is still in use"},
+		{"self-signed not renewed", Certificate{NotAfter: c.now.Add(-time.Hour), SelfSigned: true}, CheckError, "couldn't create a new one"},
+		{"broken pair", Certificate{NotAfter: c.now.AddDate(1, 0, 0), Error: "tls: private key does not match public key"}, CheckError, "The previous one is still in use"},
 	} {
 		certificate = &test.cert
 		snapshot := m.Snapshot(State{})
@@ -380,7 +380,7 @@ func TestCertificateCheck(t *testing.T) {
 		}
 	}
 	certificate = &Certificate{NotAfter: c.now.Add(20*24*time.Hour + time.Hour)}
-	if check := checkOf(t, m.Snapshot(State{}).Checks, "certificate"); check.Title != "The certificate of the web UI expires in 20 days" {
+	if check := checkOf(t, m.Snapshot(State{}).Checks, "certificate"); check.Title != "The web UI's certificate expires in 20 days" {
 		t.Errorf("days: %q", check.Title)
 	}
 }
@@ -406,7 +406,7 @@ func TestIPv6Check(t *testing.T) {
 		{&no, &yes, &yes, CheckError, "IPv6 is off in the container"},
 		{&yes, &no, &yes, CheckError, "IPv6 forwarding is off"},
 		{&yes, &yes, &no, CheckWarning, "No IPv6 route out of the container"},
-		{&yes, nil, nil, CheckUnknown, "Can't read the state of IPv6"},
+		{&yes, nil, nil, CheckUnknown, "Can't read the IPv6 status"},
 	} {
 		details := base
 		details.IPv6On, details.IPv6Forward, details.IPv6Route = test.on, test.forward, test.route
@@ -419,7 +419,7 @@ func TestIPv6Check(t *testing.T) {
 	probe.details = base
 	probe.details.IPv6On, probe.details.IPv6Forward, probe.details.IPv6Route = &yes, &yes, &yes
 	check := checkOf(t, m.Snapshot(State{StatsAt: c.now, IPv6Servers: []string{"Office", "Lab"}}).Checks, "ipv6")
-	if check.Detail != "The servers Office, Lab have an IPv6 network: forwarding is on, with a route out of the container." {
+	if check.Detail != "The servers Office, Lab have an IPv6 network. Forwarding is on, and the container has an IPv6 route out." {
 		t.Errorf("two servers: %q", check.Detail)
 	}
 
@@ -462,33 +462,33 @@ func TestRoutingCheck(t *testing.T) {
 	}{
 		{[]Route{route(DriverMacvlan, "192.168.1.50"), {Tunnel: "fd00:1::/64", Network: "2001:db8::/64",
 			Uplink: Uplink{Interface: "eth0", Driver: DriverMacvlan, Address: "2001:db8::50"}}},
-			CheckOK, "The routed servers reach their networks directly",
-			"The router of the networks needs these routes: 10.8.0.0/24 via 192.168.1.50 (Office); fd00:1::/64 via 2001:db8::50 (Office)."},
+			CheckOK, "Routed servers reach their networks directly",
+			"Your router needs these routes: 10.8.0.0/24 via 192.168.1.50 (Office); fd00:1::/64 via 2001:db8::50 (Office)."},
 		// another driver: the network of the host, say
-		{[]Route{route("virtio_net", "")}, CheckOK, "The routed servers reach their networks directly",
-			"The router of the networks needs these routes: 10.8.0.0/24 via the address of the container on eth0 (Office)."},
+		{[]Route{route("virtio_net", "")}, CheckOK, "Routed servers reach their networks directly",
+			"Your router needs these routes: 10.8.0.0/24 via the container's address on eth0 (Office)."},
 		{[]Route{bridged(HostRoute{State: HostOff})}, CheckWarning, "A routed server needs routes on the Docker host", ""},
 		// a state never set counts as no helper
 		{[]Route{route(DriverVeth, "172.18.0.2")}, CheckWarning, "A routed server needs routes on the Docker host", ""},
-		{[]Route{bridged(HostRoute{State: HostStopped})}, CheckWarning, "The helper of the Docker host isn't running", ""},
+		{[]Route{bridged(HostRoute{State: HostStopped})}, CheckWarning, "The Docker host helper isn't running", ""},
 		{[]Route{bridged(HostRoute{State: HostPending})}, CheckUnknown, "The Docker host is adding the routes",
-			"The helper of compose.host-routes.yaml adds the routes of Office in a few seconds."},
+			"The compose.host-routes.yaml helper will add the routes for Office in a few seconds."},
 		{[]Route{bridged(HostRoute{State: HostFailed, Error: "the Docker host already has a route to 10.8.0.0/24, through 192.168.1.1"})},
 			CheckError, "The Docker host can't route a server",
 			"Office, 10.8.0.0/24: the Docker host already has a route to 10.8.0.0/24, through 192.168.1.1."},
 		{[]Route{bridged(HostRoute{State: HostRouted, Address: "192.168.1.10"})}, CheckOK,
-			"The routed servers reach their networks through the Docker host",
-			"The router of the networks needs these routes: 10.8.0.0/24 via 192.168.1.10 (Office). The Docker host sends them on to the container."},
+			"Routed servers reach their networks through the Docker host",
+			"Your router needs these routes: 10.8.0.0/24 via 192.168.1.10 (Office). The Docker host forwards the traffic to the container."},
 		// routed, but the connections from the networks stay blocked: said
 		{[]Route{bridged(HostRoute{State: HostRouted, Address: "192.168.1.10", Error: "the connections from the networks stay blocked: no chain"})},
 			CheckError, "The Docker host can't route a server", "Office, 10.8.0.0/24: the connections from the networks stay blocked: no chain."},
 		// the address of the Docker host changed: the router has the address of before
 		{[]Route{bridged(HostRoute{State: HostRouted, Address: "192.168.1.20", Previous: "192.168.1.10"})}, CheckWarning,
-			"The address of the Docker host changed",
-			"The router of the networks still sends the tunnels to the address of before, so the networks don't answer the peers. Change its routes: 10.8.0.0/24 via 192.168.1.20 instead of via 192.168.1.10 (Office). Then say it's done in the warning at the top of the page. Give the Docker host a fixed address, a DHCP reservation for example, so it doesn't change again."},
+			"The Docker host's address changed",
+			"Your router still sends VPN traffic to the old address, so your networks can't reach the peers. Update its routes: 10.8.0.0/24 via 192.168.1.20 instead of via 192.168.1.10 (Office). Then confirm it in the warning at the top of the page. Give the Docker host a fixed address (a DHCP reservation, for example) so this doesn't happen again."},
 		{[]Route{route(DriverVeth, "172.18.0.2"), route(DriverIPvlan, "192.168.1.50")}, CheckError, "A routed server can't work on ipvlan", ""},
-		{[]Route{{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"}}, CheckUnknown, "Can't read the routes of the container",
-			"A routed server needs a route to its networks, and the container has none to 192.168.1.0/24 (Office)."},
+		{[]Route{{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"}}, CheckUnknown, "Can't read the container's routes",
+			"A routed server needs a route to its networks, but the container has none to 192.168.1.0/24 (Office)."},
 	} {
 		state := State{StatsAt: c.now, Routed: []RoutedServer{{Name: "Office", Routes: test.routes}}}
 		check := checkOf(t, m.Snapshot(state).Checks, "routing")

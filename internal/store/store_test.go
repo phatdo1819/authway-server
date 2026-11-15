@@ -35,6 +35,93 @@ func schemaOf(t *testing.T, path string) int {
 	return version
 }
 
+// The lock mode off of up to 0.2.0 is written as roaming when the database opens, without a change of the schema.
+func TestLockOffRewritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authway.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, lock := range []string{LockOff, LockStrict} {
+		if _, err := s.db.Exec("INSERT INTO servers (name, interface, listen_port, public_host, private_key, network, lock_endpoint, created_at, updated_at) VALUES (?, ?, ?, 'vpn.example.com', 'key', '10.8.0.0/24', ?, 0, 0)",
+			fmt.Sprintf("s%d", index), fmt.Sprintf("wg%d", index), 51820+index, lock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migrated != (Migration{}) {
+		t.Errorf("a change of the schema: %+v", s.Migrated)
+	}
+	rows, err := s.db.Query("SELECT lock_endpoint FROM servers ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var locks []string
+	for rows.Next() {
+		var lock string
+		rows.Scan(&lock)
+		locks = append(locks, lock)
+	}
+	if strings.Join(locks, ",") != LockRoaming+","+LockStrict {
+		t.Errorf("locks: %v", locks)
+	}
+}
+
+// The authenticators of before the upgrade count as used when their user had a session on a server that asks for a
+// code since the key was made; the others wait for their first code.
+func TestTOTPConfirmedMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authway.db")
+	// the schema before migration 10, which adds totp_confirmed_at
+	olderDatabase(t, path, 9)
+	db, _ := openDB(path)
+	for _, statement := range []string{
+		"INSERT INTO servers (id, name, interface, listen_port, public_host, private_key, network, auth_mode, created_at, updated_at) VALUES (1, 'otp', 'wg0', 51820, 'vpn.example.com', 'key', '10.8.0.0/24', 'password_otp', 0, 0)",
+		"INSERT INTO servers (id, name, interface, listen_port, public_host, private_key, network, auth_mode, created_at, updated_at) VALUES (2, 'password', 'wg1', 51821, 'vpn.example.com', 'key', '10.8.1.0/24', 'password', 0, 0)",
+		// 1 logged in with a code; 2 only on a server without codes; 3 got a new key after its login; 4 has no key
+		"INSERT INTO users (id, username, totp_secret, created_at, updated_at) VALUES (1, 'used', 'S', 0, 0), (2, 'nocode', 'S', 0, 0), (3, 'renewed', 'S', 0, 0), (4, 'none', '', 0, 0)",
+		"INSERT INTO sessions (server_id, peer_id, user_id, server_name, peer_name, username, address, started_at, expires_at) VALUES (1, 1, 1, 'otp', 'p', 'used', '10.8.0.2', 100, 200), (1, 1, 1, 'otp', 'p', 'used', '10.8.0.2', 300, 400), (2, 2, 2, 'password', 'p', 'nocode', '10.8.1.2', 100, 200), (1, 3, 3, 'otp', 'p', 'renewed', '10.8.0.3', 100, 200), (1, 4, 4, 'otp', 'p', 'none', '10.8.0.4', 100, 200)",
+		"INSERT INTO events (at, kind, username) VALUES (50, 'user_mfa_on', 'used'), (150, 'user_mfa_on', 'Renewed')",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := map[int64]int64{1: 300, 2: 0, 3: 0, 4: 0}
+	for id, at := range want {
+		user, err := s.Q().User(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if user.TOTPConfirmedAt != at {
+			t.Errorf("%s: confirmed at %d, want %d", user.Username, user.TOTPConfirmedAt, at)
+		}
+	}
+	// once, and only for a key
+	if err := s.Q().ConfirmUserTOTP(2, 500); err != nil {
+		t.Fatal(err)
+	}
+	s.Q().ConfirmUserTOTP(2, 600)
+	s.Q().ConfirmUserTOTP(4, 500)
+	if user, _ := s.Q().User(2); user.TOTPConfirmedAt != 500 || user.Version != 1 {
+		t.Errorf("confirmed: %+v", user)
+	}
+	if user, _ := s.Q().User(4); user.TOTPConfirmedAt != 0 {
+		t.Errorf("without a key: %+v", user)
+	}
+}
+
 // A new database gets the schema of this version, no copy. One of an older version is copied first, whole: the
 // version of before opens the copy. One of a newer version isn't opened.
 func TestSchemaChange(t *testing.T) {

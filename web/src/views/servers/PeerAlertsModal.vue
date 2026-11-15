@@ -37,7 +37,7 @@ async function clear() {
   busy.value = true
   try {
     await api.clearPeerAlerts(props.peer.id)
-    notify(props.peer.blocked ? `${props.peer.name} is unblocked.` : 'Alerts cleared.')
+    notify(props.peer.blocked ? `${props.peer.name} unblocked.` : 'Alerts cleared.')
     emit('cleared')
     emit('close')
   } catch (e) {
@@ -49,11 +49,11 @@ async function clear() {
 </script>
 
 <template>
-  <UiModal :open="peer !== null" :title="`Alerts of ${peer?.name ?? ''}`" wide @close="emit('close')">
+  <UiModal :open="peer !== null" :title="`Alerts for ${peer?.name ?? ''}`" wide @close="emit('close')">
     <div class="space-y-4">
       <UiNotice v-if="peer?.blocked" tone="error" title="This peer is blocked">
-        Its configuration looked used by two devices at once. If the user shared or lost it, give the peer
-        <strong>New keys</strong> and the user the new file. Otherwise clear the alerts to unblock it.
+        Its configuration appeared to be in use on two devices at once. If the user shared or lost it, give the peer
+        <strong>New keys</strong> and send the user the new file. Otherwise, clear the alerts to unblock it.
       </UiNotice>
       <ul class="divide-y divide-slate-200 dark:divide-slate-700">
         <li v-for="alert in alerts" :key="alert.id" class="py-3">

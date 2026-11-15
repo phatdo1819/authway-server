@@ -49,6 +49,7 @@ type config struct {
 	fakeNetwork   bool
 	devPeer       string
 	hostRoutes    string
+	proxies       []netip.Prefix
 }
 
 func env(name, fallback string) string {
@@ -89,8 +90,13 @@ func parseConfig(args []string) (config, bool, error) {
 	flags.StringVar(&c.hostRoutes, "host-routes", env("AUTHWAY_HOST_ROUTES", ""), "the folder shared with the helper of compose.host-routes.yaml, which routes the tunnels of the routed servers through the Docker host (AUTHWAY_HOST_ROUTES)")
 	flags.BoolVar(&c.fakeNetwork, "fake-network", false, "change nothing on the system, to try the web pages on a computer without WireGuard")
 	flags.StringVar(&c.devPeer, "dev-peer", "", "with -fake-network: the requests to the login page from this computer count as coming from this peer address")
+	proxies := flags.String("trusted-proxies", env("AUTHWAY_TRUSTED_PROXIES", ""), "the reverse proxies in front of the web UI, addresses or networks separated by commas: from them, X-Forwarded-For gives the address of the browser and X-Forwarded-Proto: https keeps the cookie for HTTPS only (AUTHWAY_TRUSTED_PROXIES)")
 	showVersion := flags.Bool("version", false, "print the version")
 	if err := flags.Parse(args); err != nil {
+		return c, false, err
+	}
+	var err error
+	if c.proxies, err = parsePrefixes("-trusted-proxies", *proxies); err != nil {
 		return c, false, err
 	}
 	if *showVersion {
@@ -114,6 +120,28 @@ func parseConfig(args []string) (config, bool, error) {
 		return c, false, errors.New("-dev-peer works only with -fake-network")
 	}
 	return c, false, nil
+}
+
+// parsePrefixes reads a list of addresses or networks separated by commas, for the flag name
+func parsePrefixes(name, text string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, item := range strings.Split(text, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(item); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		address, err := netip.ParseAddr(item)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not an address or a network", name, item)
+		}
+		address = address.Unmap()
+		prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
+	}
+	return prefixes, nil
 }
 
 func main() {
@@ -169,7 +197,13 @@ func hostRoutes(args []string) int {
 	dir := flags.String("dir", env("AUTHWAY_HOST_ROUTES", "/host-routes"), "the folder shared with Authway Server (AUTHWAY_HOST_ROUTES)")
 	health := flags.Bool("health", false, "only tell whether the helper works, for the health check of its container")
 	logLevel := flags.String("log-level", env("AUTHWAY_LOG_LEVEL", "info"), "debug, info, warn or error (AUTHWAY_LOG_LEVEL)")
+	publicText := flags.String("public", env("AUTHWAY_ROUTE_PUBLIC", ""), "the public tunnel networks to route too, IPv4 or global IPv6, separated by commas: without them, only the private IPv4 and the unique local IPv6 ones (AUTHWAY_ROUTE_PUBLIC)")
 	if err := flags.Parse(args); err != nil || flags.NArg() > 0 {
+		return 2
+	}
+	public, err := parsePrefixes("-public", *publicText)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	if *health {
@@ -192,7 +226,9 @@ func hostRoutes(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	hostroute.NewHelper(*dir, hostroute.System{}, log).Run(ctx)
+	helper := hostroute.NewHelper(*dir, hostroute.System{}, log)
+	helper.Public = public
+	helper.Run(ctx)
 	return 0
 }
 
@@ -372,7 +408,7 @@ func run(args []string) int {
 	}
 	adminServer := &http.Server{
 		Addr:              c.adminListen,
-		Handler:           admin.New(service, admin.Options{Log: log, Secure: c.adminTLS}).Handler(),
+		Handler:           admin.New(service, admin.Options{Log: log, Secure: c.adminTLS, TrustedProxies: c.proxies}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

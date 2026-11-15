@@ -27,11 +27,14 @@ var uiFiles embed.FS
 
 const (
 	cookieName = "authway_admin"
+	// the browser an administrator asked to remember: sent to the login only, the password is enough there
+	deviceCookie = "authway_device"
+	devicePath   = "/api/login"
 	// every API request carries this header: a page of another site can't add it without a CORS preflight, which
 	// this API never answers
 	csrfHeader  = "X-Requested-With"
 	csrfValue   = "authway"
-	sessionIdle = 2 * time.Hour
+	sessionIdle = 4 * time.Hour
 	sessionMax  = 12 * time.Hour
 	maxBody     = 64 * 1024
 	// a backup in a JSON string: its quotes and line breaks take two bytes each
@@ -44,9 +47,13 @@ const (
 	// wrong passwords given by a session to change its own account: a session left open can't be used to find the
 	// password
 	maxPasswordFailures = 10
-	// the longest an import waits for the hashes of its passwords
-	importTime = 5 * time.Minute
+	// the longest an import waits for the hashes of its passwords, made one at a time
+	importTime = 10 * time.Minute
 )
+
+// backgroundHeader is sent by the web UI with the requests made long after the latest input on the page: they don't
+// count as activity, so a tab left open still ends idle.
+const backgroundHeader = "X-Background"
 
 // What a route needs of the administrator: anyone logged in, even before the setup of the account, or a role.
 const (
@@ -60,20 +67,34 @@ type Options struct {
 	Log *slog.Logger
 	// Secure marks the cookie for HTTPS only
 	Secure bool
+	// TrustedProxies are the reverse proxies in front of the web UI: from them, X-Forwarded-For gives the address of
+	// the browser, and X-Forwarded-Proto: https marks the cookie for HTTPS only
+	TrustedProxies []netip.Prefix
 }
 
 type Admin struct {
 	core   *core.Service
 	log    *slog.Logger
 	secure bool
+	// the reverse proxies trusted for X-Forwarded-For and X-Forwarded-Proto
+	proxies []netip.Prefix
 
 	mu       sync.Mutex
 	sessions map[string]*session
-	failures map[netip.Addr][]time.Time
+	// the logins under way and the failed ones, by address
+	failures map[netip.Addr][]*attempt
 	// wrong codes, by administrator
 	codeFailures map[int64][]time.Time
 	// wrong passwords of the changes of the own account, by administrator
 	passwordFailures map[int64][]time.Time
+}
+
+// attempt is a login from an address: counted before its password check, so the logins sent at once can't all pass
+// the count; kept if it fails.
+type attempt struct {
+	at time.Time
+	// the username typed: a login clears the failures of its own account only
+	user string
 }
 
 type session struct {
@@ -92,6 +113,8 @@ type identity struct {
 	setup string
 	// the session of the request
 	key string
+	// the address of the browser: behind a trusted proxy, the one it forwards
+	from netip.Addr
 }
 
 func (who *identity) id() int64 {
@@ -103,8 +126,8 @@ func New(service *core.Service, options Options) *Admin {
 		options.Log = slog.Default()
 	}
 	return &Admin{
-		core: service, log: options.Log, secure: options.Secure,
-		sessions: map[string]*session{}, failures: map[netip.Addr][]time.Time{}, codeFailures: map[int64][]time.Time{},
+		core: service, log: options.Log, secure: options.Secure, proxies: options.TrustedProxies,
+		sessions: map[string]*session{}, failures: map[netip.Addr][]*attempt{}, codeFailures: map[int64][]time.Time{},
 		passwordFailures: map[int64][]time.Time{},
 	}
 }
@@ -374,6 +397,20 @@ func (a *Admin) Handler() http.Handler {
 	route("DELETE /api/users/{id}", needOperator, withActorIDDone(a.core.DeleteUser))
 	route("POST /api/users/{id}/totp", needOperator, withActorID(a.core.SetupTOTP))
 	route("DELETE /api/users/{id}/totp", needOperator, withActorIDDone(a.core.RemoveTOTP))
+	// a code from the app of the user, to show the key was scanned
+	route("PUT /api/users/{id}/totp", needOperator, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		id, err := pathID(r)
+		if err != nil {
+			return nil, err
+		}
+		var input struct {
+			Code string `json:"code"`
+		}
+		if err := readJSON(r, &input); err != nil {
+			return nil, err
+		}
+		return a.core.CheckTOTP(actor(who, r), id, input.Code)
+	})
 
 	route("GET /api/sessions", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
 		return a.core.OpenSessions()
@@ -498,7 +535,10 @@ func (a *Admin) who(r *http.Request) (int64, string, uint64) {
 		delete(a.sessions, key)
 		return 0, "", 0
 	}
-	entry.seen = now
+	// a refresh the page makes by itself, without anyone at it, isn't activity: a tab left open still ends idle
+	if r.Header.Get(backgroundHeader) == "" {
+		entry.seen = now
+	}
 	return entry.adminID, key, entry.generation
 }
 
@@ -567,7 +607,7 @@ func (a *Admin) authenticatedRaw(need int, h func(w http.ResponseWriter, r *http
 				return
 			}
 		}
-		h(w, r, &identity{admin: admin, setup: setup, key: key})
+		h(w, r, &identity{admin: admin, setup: setup, key: key, from: a.client(r)})
 	})
 }
 
@@ -576,34 +616,54 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
 		return
 	}
-	source := remoteAddress(r)
+	source := a.client(r)
 	// counted by network: an IPv6 address by its /64, whose many addresses don't multiply the attempts
 	counted := failureKey(source)
 	now := time.Now()
 	// before the password check: a restore during it gives the session an old generation, which the next request refuses
 	generation := a.core.Generation()
-	a.mu.Lock()
-	recent := recentFailures(a.failures[counted], now)
-	a.failures[counted] = recent
-	a.mu.Unlock()
-	if len(recent) >= maxFailures {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too_many_attempts", "retry_after": retryAfter(recent, maxFailures, now)})
-		return
-	}
 	var input struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		OTP      string `json:"otp"`
+		// remember this browser: the next logins from it need no code
+		Remember bool `json:"remember"`
 	}
 	if err := readJSON(r, &input); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
 	name := truncate(strings.TrimSpace(input.Username), 64)
-	fail := func(status int, code, reason string) {
-		a.mu.Lock()
-		a.failures[counted] = append(a.failures[counted], now)
+	// the attempt counts before the password check, and stays unless the login works
+	pending := &attempt{at: now, user: name}
+	a.mu.Lock()
+	recent := recentAttempts(a.failures[counted], now)
+	if len(recent) >= maxFailures {
+		a.failures[counted] = recent
 		a.mu.Unlock()
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too_many_attempts", "retry_after": retryAfter(attemptTimes(recent), maxFailures, now)})
+		return
+	}
+	a.failures[counted] = append(recent, pending)
+	a.mu.Unlock()
+	// drop removes the attempts of this address that match
+	drop := func(match func(*attempt) bool) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		kept := a.failures[counted][:0:0]
+		for _, entry := range a.failures[counted] {
+			if !match(entry) {
+				kept = append(kept, entry)
+			}
+		}
+		if len(kept) == 0 {
+			delete(a.failures, counted)
+		} else {
+			a.failures[counted] = kept
+		}
+	}
+	dropPending := func() { drop(func(entry *attempt) bool { return entry == pending }) }
+	fail := func(status int, code, reason string) {
 		// an unknown username isn't kept, in the log either: it can be a password typed in the wrong field
 		if known := a.core.AdminLoginFailed(name, source.String(), reason); known != "" {
 			a.log.Warn("administrator login failed", "user", known, "from", source, "reason", reason)
@@ -612,7 +672,14 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, status, map[string]any{"error": code})
 	}
-	admin, ok := a.core.AdminLogin(input.Username, input.Password)
+	// one password check at a time with the imports: the other slot of the hashing stays for the logins of the VPN
+	var admin *store.Admin
+	var ok bool
+	if !secret.Shared(r.Context().Done(), func() { admin, ok = a.core.AdminLogin(input.Username, input.Password) }) {
+		// gone before its password was checked: not a guess
+		dropPending()
+		return
+	}
 	if !ok {
 		fail(http.StatusUnauthorized, "invalid_credentials", "wrong username or password")
 		return
@@ -621,31 +688,43 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusForbidden, "disabled", "account disabled")
 		return
 	}
-	if admin.TOTPSecret != "" {
+	// a browser the administrator asked to remember: the password is enough
+	remembered := false
+	if admin.TOTPSecret != "" && input.OTP == "" {
+		if cookie, err := r.Cookie(deviceCookie); err == nil {
+			remembered = a.core.RememberedAdmin(admin.ID, cookie.Value, source.String())
+		}
+	}
+	if admin.TOTPSecret != "" && !remembered {
 		if input.OTP == "" {
-			// the password is right: the page asks the code
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "otp_required"})
+			// the password is right: not a failure, the page asks the code, and says how long it can remember the browser
+			dropPending()
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "otp_required", "remember_days": a.core.AdminRememberDays()})
 			return
 		}
+		// like the passwords, the code counts before its check
 		a.mu.Lock()
 		codes := recentFailures(a.codeFailures[admin.ID], now)
-		a.codeFailures[admin.ID] = codes
-		a.mu.Unlock()
 		if len(codes) >= maxCodeFailures {
+			a.codeFailures[admin.ID] = codes
+			a.mu.Unlock()
+			// the password was right: the codes are what's stopped, not the address
+			dropPending()
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too_many_attempts", "retry_after": retryAfter(codes, maxCodeFailures, now)})
 			return
 		}
+		a.codeFailures[admin.ID] = append(codes, now)
+		a.mu.Unlock()
 		if !a.core.CheckAdminCode(admin.ID, strings.TrimSpace(input.OTP)) {
-			a.mu.Lock()
-			a.codeFailures[admin.ID] = append(a.codeFailures[admin.ID], now)
-			a.mu.Unlock()
 			fail(http.StatusUnauthorized, "invalid_otp", "wrong authenticator code")
 			return
 		}
 	}
+	// the failures of this account from this address end, not the ones of other usernames: an account of its own
+	// doesn't reset the guesses at another one
+	drop(func(entry *attempt) bool { return entry == pending || strings.EqualFold(entry.user, admin.Username) })
 	token := secret.Token(32)
 	a.mu.Lock()
-	delete(a.failures, counted)
 	delete(a.codeFailures, admin.ID)
 	for key, entry := range a.sessions {
 		if now.Sub(entry.seen) > sessionIdle || now.Sub(entry.created) > sessionMax {
@@ -653,17 +732,29 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for address, list := range a.failures {
-		if len(recentFailures(list, now)) == 0 {
+		if len(recentAttempts(list, now)) == 0 {
 			delete(a.failures, address)
 		}
 	}
 	a.sessions[secret.Fingerprint(token)] = &session{adminID: admin.ID, generation: generation, created: now, seen: now}
 	a.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: a.secure,
+		Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: a.secureFor(r),
 		SameSite: http.SameSiteStrictMode, MaxAge: int(sessionMax.Seconds()),
 	})
-	a.log.Info("administrator logged in", "user", admin.Username, "from", source)
+	if admin.TOTPSecret != "" && !remembered && input.Remember {
+		if device, life := a.core.RememberAdminDevice(admin.ID, source.String()); device != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name: deviceCookie, Value: device, Path: devicePath, HttpOnly: true, Secure: a.secureFor(r),
+				SameSite: http.SameSiteStrictMode, MaxAge: int(life.Seconds()),
+			})
+		}
+	}
+	if remembered {
+		a.log.Info("administrator logged in", "user", admin.Username, "from", source, "device", "remembered")
+	} else {
+		a.log.Info("administrator logged in", "user", admin.Username, "from", source)
+	}
 	a.core.AdminLoggedIn(admin.ID, source.String())
 	_, setup, _ := a.core.AdminAccess(admin.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"username": admin.Username, "role": admin.Role, "setup": setup})
@@ -677,7 +768,7 @@ func (a *Admin) logout(w http.ResponseWriter, r *http.Request, who *identity) (a
 	a.mu.Lock()
 	delete(a.sessions, who.key)
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.secureFor(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	return nil, nil
 }
 
@@ -819,7 +910,7 @@ func (a *Admin) restore(w http.ResponseWriter, r *http.Request, who *identity) (
 	a.codeFailures = map[int64][]time.Time{}
 	a.passwordFailures = map[int64][]time.Time{}
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.secureFor(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	a.log.Info("every session of the web UI ended after a restore", "by", who.admin.Username)
 	return summary, nil
 }
@@ -923,8 +1014,8 @@ func withID[T any](fn func(int64) (T, error)) handler {
 // actor is the administrator of a request, for the events of the changes
 func actor(who *identity, r *http.Request) core.Actor {
 	from := ""
-	if address := remoteAddress(r); address.IsValid() {
-		from = address.String()
+	if who.from.IsValid() {
+		from = who.from.String()
 	}
 	return core.Actor{ID: who.admin.ID, Username: who.admin.Username, From: from}
 }
@@ -1003,6 +1094,54 @@ func remoteAddress(r *http.Request) netip.Addr {
 	return addrPort.Addr().Unmap()
 }
 
+// trusted tells whether an address is one of the reverse proxies of the web UI
+func (a *Admin) trusted(address netip.Addr) bool {
+	for _, prefix := range a.proxies {
+		if address.IsValid() && prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+// client returns the address of the browser. From a trusted proxy, it's the nearest address of X-Forwarded-For that
+// isn't a trusted proxy too: the ones further left were written by the client, which can put anything there.
+func (a *Admin) client(r *http.Request) netip.Addr {
+	address := remoteAddress(r)
+	if !a.trusted(address) {
+		return address
+	}
+	var hops []string
+	for _, value := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(value, ",")...)
+	}
+	for index := len(hops) - 1; index >= 0; index-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[index]))
+		if err != nil {
+			// not an address: the hops before it can't be read, the last trusted one is the client
+			return address
+		}
+		address = hop.Unmap()
+		if !a.trusted(address) {
+			return address
+		}
+	}
+	return address
+}
+
+// secureFor tells whether the cookie of a request is for HTTPS only: always with the HTTPS of Authway, and behind a
+// trusted proxy when it says the browser used HTTPS
+func (a *Admin) secureFor(r *http.Request) bool {
+	if a.secure || r.TLS != nil {
+		return true
+	}
+	if !a.trusted(remoteAddress(r)) {
+		return false
+	}
+	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
+}
+
 // failureKey is what the failed logins count by: an IPv4 address, or the /64 of an IPv6 one.
 func failureKey(address netip.Addr) netip.Addr {
 	if address.Is6() {
@@ -1019,6 +1158,24 @@ func recentFailures(list []time.Time, now time.Time) []time.Time {
 		}
 	}
 	return kept
+}
+
+func recentAttempts(list []*attempt, now time.Time) []*attempt {
+	kept := list[:0:0]
+	for _, entry := range list {
+		if now.Sub(entry.at) < failWindow {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+func attemptTimes(list []*attempt) []time.Time {
+	times := make([]time.Time, len(list))
+	for index, entry := range list {
+		times[index] = entry.at
+	}
+	return times
 }
 
 func truncate(text string, length int) string {

@@ -27,12 +27,12 @@ const limited = ref(false)
 const access = ref<string[]>([])
 const serverNetworks = computed(() => props.server.networks.join(', '))
 const accessModes = [
-  { value: false, label: 'All the networks of the server' },
+  { value: false, label: "All of the server's networks" },
   { value: true, label: 'Only some of them' },
 ]
 const accessHelp = computed(() => {
-  const help = `Addresses or networks inside ${serverNetworks.value}. An address alone is that one device. It still asks the DNS servers of the server.`
-  return form.value.route_all ? `${help} With all its traffic through the tunnel, it reaches the internet too, but no other private network.` : help
+  const help = `Addresses or networks inside ${serverNetworks.value}. A single address means just that one device. The peer still uses the server's DNS servers.`
+  return form.value.route_all ? `${help} Since all its traffic goes through the VPN, it can also reach the internet, but no other private networks.` : help
 })
 const accessChanges = computed(() => {
   const before = props.peer?.access ?? []
@@ -44,7 +44,7 @@ const gated = computed(() => props.server.auth_mode !== 'key')
 // another administrator saving this peer meanwhile
 const guard = useEditGuard(
   (peer: Peer) => ({ name: peer.name, enabled: peer.enabled, user_id: peer.user_id, route_all: peer.route_all, access: [...peer.access] }),
-  { name: 'Name', enabled: 'Enabled', user_id: 'User', route_all: 'All the traffic through the tunnel', access: 'Networks it reaches' },
+  { name: 'Name', enabled: 'Enabled', user_id: 'User', route_all: 'All traffic through the VPN', access: 'Networks it can reach' },
 )
 const conflict = guard.conflict
 // the fields of the form, as the server has them
@@ -90,9 +90,9 @@ const changesFile = computed(
 )
 // on a server with an IPv6 network, the IPv6 address that comes with the IPv4 one typed
 const addressHelp = computed(() => {
-  const help = "The next free address is filled in. It can't change once the peer is added: its configuration file has it."
+  const help = "The next free address is filled in. It can't be changed after the peer is added, because it's in the configuration file."
   const address6 = addressError.value ? '' : address6Of(form.value.address ?? '', props.server.network, props.server.network6)
-  return address6 ? `Its IPv6 address: ${address6}. ${help}` : help
+  return address6 ? `IPv6 address: ${address6}. ${help}` : help
 })
 
 watch(
@@ -142,7 +142,7 @@ watch(
 
 async function save() {
   if (addressError.value) {
-    error.value = 'Check the fields in red.'
+    error.value = 'Check the fields marked in red.'
     return
   }
   busy.value = true
@@ -192,16 +192,16 @@ async function save() {
         label="User"
         :options="userOptions"
         :error="fieldMessage(errors.user_id)"
-        helper="The user logs in with their password before the traffic of this peer passes."
+        helper="The user logs in with their password before this peer's traffic gets through."
       />
       <UiNotice v-if="gated && users.length === 0" tone="warning">
-        There is no user yet: add one in <RouterLink to="/users" class="font-medium underline">Users</RouterLink> first.
+        There are no users yet. Add one in <RouterLink to="/users" class="font-medium underline">Users</RouterLink> first.
       </UiNotice>
-      <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" helper="For example the device: Alice laptop." />
+      <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" helper="Usually the device, for example: Alice's laptop." />
       <UiToggle
         v-model="form.route_all"
-        label="Send all the traffic through the tunnel"
-        description="The internet traffic of the device goes out from this server too. Otherwise only the networks of the server do."
+        label="Send all traffic through the VPN"
+        description="The device's internet traffic also goes out through this server. If off, only traffic for the server's networks uses the VPN."
       />
       <fieldset v-if="server.networks.length" class="space-y-2.5">
         <legend class="mb-2 text-sm font-medium">Networks it reaches</legend>
@@ -233,15 +233,15 @@ async function save() {
         />
       </fieldset>
       <UiNotice v-if="changesFile" tone="info">
-        This changes the configuration file: download it again for the device.
+        This changes the configuration file. Download it again for the device.
       </UiNotice>
       <UiToggle v-model="form.enabled" label="Enabled" description="A disabled peer keeps its keys but can't connect." />
       <UiInput
         v-if="!peer"
         v-model="form.address as string"
-        label="Address in the tunnel"
+        label="VPN address"
         mono
-        :placeholder="`The next free one in ${server.network}`"
+        :placeholder="`Next free address in ${server.network}`"
         :error="addressError || fieldMessage(errors.address || (networkFull ? 'network_full' : ''))"
         :helper="addressHelp"
       />

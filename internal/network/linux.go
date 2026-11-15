@@ -76,6 +76,10 @@ func (l *Linux) Apply(state State) error {
 	return errors.Join(errs...)
 }
 
+// applyServer sets up the interface of a server. What matters for safety is its peers: when they can't be set, the
+// interface goes down, fail closed as with the firewall, since it can still have a peer deleted or disabled since,
+// which nothing else stops on a server without a login. The next try, a few seconds later, brings it up again. An
+// MTU or an address that can't be set only makes the tunnel work less well: it stays up, and the error says why.
 func (l *Linux) applyServer(server Server, exists bool) error {
 	name := server.Interface
 	if !exists {
@@ -86,24 +90,31 @@ func (l *Linux) applyServer(server Server, exists bool) error {
 			return err
 		}
 	}
+	var errs []error
 	mtu := server.MTU
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
 	if err := run("", "ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu)); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("its MTU can't be set: %w", err))
 	}
 	ipv6Err, err := setAddresses(name, server)
 	if err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("its addresses can't be set: %w", err))
 	}
+	errs = append(errs, ipv6Err)
 	if err := l.configure(server); err != nil {
-		return err
+		errs = append(errs, err)
+		if downErr := run("", "ip", "link", "set", "dev", name, "down"); downErr != nil {
+			l.log.Error("can't take a tunnel down", "interface", name, "error", downErr)
+			return errors.Join(errs...)
+		}
+		return fmt.Errorf("%w; the tunnel is down until its peers can be set", errors.Join(errs...))
 	}
 	if err := run("", "ip", "link", "set", "dev", name, "up"); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return ipv6Err
+	return errors.Join(errs...)
 }
 
 // setAddresses gives the interface the addresses of the server, and takes away the others: one by one, so the

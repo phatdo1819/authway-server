@@ -38,12 +38,12 @@ function openBackup() {
 async function makeBackup() {
   const errors: Errors = {}
   if ([...passphrase.value].length < minPassphrase) {
-    errors.passphrase = `At least ${minPassphrase} characters.`
+    errors.passphrase = `Use at least ${minPassphrase} characters.`
   } else if (passphrase.value !== passphraseAgain.value) {
-    errors.again = 'The two passphrases differ.'
+    errors.again = "The passphrases don't match."
   }
   if (!password.value) {
-    errors.password = 'Type your password.'
+    errors.password = 'Enter your password.'
   }
   backupErrors.value = errors
   if (Object.keys(errors).length) {
@@ -55,7 +55,7 @@ async function makeBackup() {
     download(file.name, file.text, 'application/json')
     backingUp.value = false
     passphrase.value = passphraseAgain.value = password.value = ''
-    notify('Backup downloaded. Keep the passphrase apart from the file.')
+    notify('Backup downloaded. Store the passphrase separately from the file.')
   } catch (e) {
     backupErrors.value = apiErrors(e)
   } finally {
@@ -92,7 +92,7 @@ async function chooseFile(event: Event) {
     return
   }
   if (file.size > maxSize) {
-    restoreErrors.value = { file: "This file is too large to be a backup of Authway Server." }
+    restoreErrors.value = { file: 'This file is too large to be an Authway Server backup.' }
     return
   }
   try {
@@ -105,11 +105,11 @@ async function chooseFile(event: Event) {
 function backupMessage(code: string, detail: string): string {
   switch (code) {
     case 'required':
-      return 'Choose the file of a backup.'
+      return 'Choose a backup file.'
     case 'not_backup':
-      return "This file isn't a backup of Authway Server."
+      return "This file isn't an Authway Server backup."
     case 'newer_version':
-      return 'This backup comes from a newer version of Authway Server: update this one first.'
+      return 'This backup is from a newer version of Authway Server. Update this installation first.'
     case 'invalid_content':
       return `This backup can't be restored: ${detail || 'its content isn’t valid'}.`
   }
@@ -136,10 +136,10 @@ function apiErrors(e: unknown): Errors {
 async function check() {
   const errors: Errors = {}
   if (!fileText.value) {
-    errors.file = restoreErrors.value.file ?? 'Choose the file of a backup.'
+    errors.file = restoreErrors.value.file ?? 'Choose a backup file.'
   }
   if (!restorePassphrase.value) {
-    errors.passphrase = 'Type the passphrase of the backup.'
+    errors.passphrase = "Enter the backup's passphrase."
   }
   restoreErrors.value = errors
   if (Object.keys(errors).length) {
@@ -157,7 +157,7 @@ async function check() {
 
 async function restore() {
   if (!restorePassword.value) {
-    restoreErrors.value = { password: 'Type your password.' }
+    restoreErrors.value = { password: 'Enter your password.' }
     return
   }
   restoreErrors.value = {}
@@ -193,9 +193,9 @@ function count(n: number, thing: string): string {
   <section :class="section">
     <h2 class="text-base font-semibold">Backup and restore</h2>
     <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-      A backup has the whole configuration: the servers and their keys, the peers, the users with their passwords and
-      authenticators, the administrators and these settings. Not the history, the events or the alerts. A passphrase that
-      you choose encrypts it.
+      A backup contains the whole configuration: servers and their keys, peers, users with their passwords and
+      authenticators, administrators, and these settings. It doesn't include history, events or alerts. It's encrypted
+      with a passphrase you choose.
     </p>
     <div class="mt-4 flex flex-wrap gap-2">
       <UiButton icon="download" @click="openBackup">Download a backup</UiButton>
@@ -206,8 +206,8 @@ function count(n: number, thing: string): string {
   <UiModal :open="backingUp" title="Download a backup" @close="backingUp = false">
     <form id="make-backup" class="space-y-4" novalidate @submit.prevent="makeBackup">
       <p class="text-sm text-slate-600 dark:text-slate-300">
-        The file has the keys of every tunnel and the password hashes: the passphrase encrypts it. Without the passphrase
-        nobody can restore it, you neither. Keep it apart from the file, in a password manager.
+        The file contains every server's keys and the password hashes, so it's encrypted with your passphrase. Without
+        the passphrase, no one can restore it, including you. Store the passphrase separately, in a password manager.
       </p>
       <UiInput
         v-model="passphrase"
@@ -217,7 +217,7 @@ function count(n: number, thing: string): string {
         :helper="`At least ${minPassphrase} characters.`"
         :error="backupErrors.passphrase"
       />
-      <UiInput v-model="passphraseAgain" label="Passphrase again" type="password" autocomplete="new-password" :error="backupErrors.again" />
+      <UiInput v-model="passphraseAgain" label="Confirm passphrase" type="password" autocomplete="new-password" :error="backupErrors.again" />
       <UiInput v-model="password" label="Your password" type="password" autocomplete="current-password" :error="backupErrors.password" />
       <UiNotice v-if="backupErrors.other" tone="error">{{ backupErrors.other }}</UiNotice>
     </form>
@@ -230,7 +230,7 @@ function count(n: number, thing: string): string {
   <UiModal :open="restoring" title="Restore a backup" @close="closeRestore">
     <form v-show="!summary" id="check-backup" class="space-y-4" novalidate @submit.prevent="check">
       <p class="text-sm text-slate-600 dark:text-slate-300">
-        Choose the file and type its passphrase: the next step shows what the backup has, before anything changes.
+        Choose the file and enter its passphrase. The next step shows what the backup contains before anything changes.
       </p>
       <div>
         <label for="backup-file" class="mb-1.5 block text-sm font-medium text-slate-800 dark:text-slate-200">File of the backup</label>
@@ -244,30 +244,30 @@ function count(n: number, thing: string): string {
         />
         <p v-if="restoreErrors.file" class="mt-1.5 text-sm text-rose-700 dark:text-rose-400">{{ restoreErrors.file }}</p>
       </div>
-      <UiInput v-model="restorePassphrase" label="Passphrase of the backup" type="password" autocomplete="off" :error="restoreErrors.passphrase" />
+      <UiInput v-model="restorePassphrase" label="Backup passphrase" type="password" autocomplete="off" :error="restoreErrors.passphrase" />
       <UiNotice v-if="restoreErrors.other" tone="error">{{ restoreErrors.other }}</UiNotice>
     </form>
 
     <form v-if="summary" id="restore-backup" class="space-y-4" novalidate @submit.prevent="restore">
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-        <dt class="text-slate-500 dark:text-slate-400">Made</dt>
+        <dt class="text-slate-500 dark:text-slate-400">Created</dt>
         <dd>{{ dateTime(summary.created_at) }}, by {{ summary.made_by }}</dd>
-        <dt class="text-slate-500 dark:text-slate-400">Content</dt>
+        <dt class="text-slate-500 dark:text-slate-400">Contains</dt>
         <dd>
           {{ count(summary.servers, 'server') }}, {{ count(summary.peers, 'peer') }}, {{ count(summary.users, 'user') }},
           {{ count(summary.administrators, 'administrator') }}
         </dd>
       </dl>
-      <UiNotice tone="warning" title="Everything here is replaced">
-        The servers, the peers, the users, the administrators and the settings become the ones of the backup. The open VPN
-        sessions end, the alerts go, and every administrator is logged out. The history and the events stay.
+      <UiNotice tone="warning" title="Everything here will be replaced">
+        Servers, peers, users, administrators and settings are replaced with those in the backup. Open VPN sessions end,
+        alerts are cleared, and every administrator is logged out. History and events are kept.
       </UiNotice>
       <UiNotice v-if="!summary.includes_you" tone="warning">
-        Your account isn't in this backup: after the restore, log in as {{ loginAs }}.
+        Your account isn't in this backup. After restoring, log in as {{ loginAs }}.
       </UiNotice>
       <p v-else class="text-sm text-slate-600 dark:text-slate-300">
-        After the restore, log in again as <span class="font-medium">{{ session.me?.username }}</span>, with the password
-        and the authenticator that the backup has.
+        After restoring, log in again as <span class="font-medium">{{ session.me?.username }}</span>, using the password
+        and authenticator stored in the backup.
       </p>
       <UiInput v-model="restorePassword" label="Your password" type="password" autocomplete="current-password" :error="restoreErrors.password" />
       <UiNotice v-if="restoreErrors.file || restoreErrors.other" tone="error">{{ restoreErrors.file || restoreErrors.other }}</UiNotice>

@@ -155,6 +155,12 @@ that version. The view of the server has them (`routes`), and the System page ch
 ipvlan, a warning on veth without a helper or with a stopped one, an error when the helper refused a route, unknown
 without a route, else the routes to add on the router: through the Docker host, or to the container.
 
+The web UI takes that next hop from the routes of any routed server towards the same first IPv4 network
+(`routerRoute`, `web/src/routing.ts`): the Docker host once its helper routes it, or the container on macvlan. The
+help of NAT and routed then draws the server with its tunnel, its network and that address, with `x` for any peer
+and any computer, and the drawer of a server turned routed gives the route before saving. Without one, the help
+keeps its example addresses: the address of the Docker host can't be read from the container.
+
 ### The helper of the Docker host
 
 `authway-server host-routes` (`internal/hostroute`) runs in a container of its own on the network of the host, with
@@ -211,7 +217,8 @@ address of the server as host: a page of another site whose name resolves to it 
   [The WireGuard key of the device](#the-wireguard-key-of-the-device)
 
 The POST requests need `Content-Type: application/json`: a form of another site can't send it without a CORS
-preflight, which the API never answers. Each address gets 30 requests a minute, 10 at once, on login and device-key.
+preflight, which the API never answers. Each address gets 30 requests a minute, 10 at once, on login and device-key,
+and 120 a minute, 20 at once, on status, which reads WireGuard: `429 too_many_requests` with `retry_after` past them.
 
 The configuration file of a peer of a server with login has `# Login = http://<server>:8181/` in `[Interface]`.
 
@@ -239,17 +246,19 @@ WireGuard tells peers apart only by their keys: a copy of a configuration file i
 devices apart, both from the endpoint WireGuard reads for the peer, the public IP of its latest packet. They run every
 5 seconds, and at each status request of the login page for its peer.
 
-**The lock of a session to the IP of its login** (`lock_endpoint` of the server):
+**The lock of a session to the IP of its login** (`lock_endpoint` of the server, a switch in the web UI, on by
+default):
 
-- `strict`: when the peer sends from another IP, the session pauses (`paused_at`): its address leaves the gate set,
+- `strict`, on: when the peer sends from another IP, the session pauses (`paused_at`): its address leaves the gate set,
   its connections are cut, the login page says it isn't logged in. A login while WireGuard can't be read has no IP
   yet: the session is locked to the first one WireGuard reports. When the peer sends from the IP of the login
   again, the session resumes for the time it has left: when a copy goes away, the device that logged in gets its
   session back without a new login. After 5 minutes paused, the session ends (`endpoint_changed`). A new login from
   the new IP moves the lock there: a user who changes network logs in again.
-- `roaming`: the session follows the peer to its new IP. Two devices at once are still caught by the detection, but a
-  copy used while the real device is off keeps the session.
-- `off`: the IP is ignored.
+- `roaming`, off: the session follows the peer to its new IP. Two devices at once are still caught by the detection,
+  but a copy used while the real device is off keeps the session.
+- `off`, up to 0.2.0, ignored the IP: it protected no more than `roaming`, which the store reads it as now, and the
+  API takes it as (the backups and the clients of before).
 
 **Two devices at once** (`detect_copies`): while both are on, WireGuard answers each in turn, so the endpoint switches
 back and forth. Three changes in 5 minutes that come back to an IP already seen mean a copy; a device that moves goes
@@ -424,11 +433,21 @@ skip the policy and must be changed at the next login.
 
 The administrators log in with a password (10 failures in 15 minutes from one address wait), then the code of their
 authenticator app when they have one. The login answers `otp_required` when the password is right and a code is
-missing: the page asks for it, and sends both again. Each code works once; 5 wrong codes for an administrator, from
-any address, stop its codes for 15 minutes, so the password alone can't be used to try them all.
+missing: the page asks for it, and sends both again. With "Remember this device" ticked, a login with a code also
+gets a second cookie, `authway_device` (HttpOnly, sent to `/api/login` only), for the days of the setting
+(`admin_remember_days`, 30 by default, 0 off). The database keeps only its SHA-256 in `admin_devices`, with a
+fingerprint of the password hash and the authenticator secret of that moment: from that browser, the right password
+is then enough until the days run out, the setting gets shorter or off, or the password or the authenticator
+changes. An administrator keeps the latest 10; deleting the administrator or a restore deletes them. Each code works once; 5 wrong codes for an administrator, from
+any address, stop its codes for 15 minutes, so the password alone can't be used to try them all. A login counts
+before its password is checked, so logins sent at once can't pass these limits, and a login that works clears only
+the failures of its own username: an account of its own doesn't reset the guesses at another one. The logins of the
+web UI check one password at a time, taking turns with the imports at one slot of the hashing: a flood of them, even
+during an import, leaves the other slot to the logins of the VPN.
 
 The session is a random cookie, `HttpOnly`, `SameSite=Strict`, `Secure` with HTTPS, kept by its SHA-256 in memory: a
-restart logs everybody out. It ends after 2 hours without a request, or 12 hours. Every request reads the
+restart logs everybody out. It ends after 4 hours without anyone at the page, or 12 hours:
+the refreshes the page makes by itself, more than a minute after the latest input, don't count. Every request reads the
 administrator from the database again: a role taken away, a disabled or deleted administrator apply at the next
 request. Every API request needs the header `X-Requested-With: authway`, which a page of another site can't send
 without a preflight. The pages have a strict Content Security Policy. The API never sends a private key, except in
@@ -500,11 +519,11 @@ always: an error among them still stops the import. `users` counts the users add
 of users that are all there adds nothing.
 
 With `check`, or a row in error, nothing is added: `{rows, users, skipped, invalid, imported: false}`. Else the
-passwords are hashed out of the lock, then the file is checked again under it (another administrator may have added
+passwords are hashed out of the lock, one at a time and in turn with the logins of the web UI, so the logins of the VPN keep the other slot of the hashing, then the file is checked again under it (another administrator may have added
 or deleted a user meanwhile: errors again and nothing added, or a row skipped no more), and the users are added in
 one transaction, each a `user_added` event with the detail `imported`. The answer adds `passwords`, the ones the server
 made: the only time they're seen. The hashes of hundreds of passwords may take longer than the 60 seconds an answer
-of the web UI may take: that route waits up to 5 minutes (200 take 6 seconds on a small ARM host).
+of the web UI may take: that route waits up to 10 minutes (200 took 6 seconds on a small ARM host two at a time).
 
 ### Roles
 

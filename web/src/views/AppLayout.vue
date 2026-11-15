@@ -79,7 +79,7 @@ async function logout() {
   try {
     await api.logout()
   } catch {
-    notify("The server doesn't answer: the session ends anyway when you close the browser.", 'error')
+    notify("Authway Server isn't responding. Your session ends anyway when you close the browser.", 'error')
   }
   session.me = null
   router.push({ name: 'login' })
@@ -146,7 +146,7 @@ async function logout() {
                 : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
             "
             :aria-current="active('/account') ? 'page' : undefined"
-            title="Your account: authenticator app and password"
+            title="Your account: password and authenticator app"
           >
             <span
               class="flex size-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-semibold text-sky-800 dark:bg-sky-500/15 dark:text-sky-300"
@@ -173,14 +173,14 @@ async function logout() {
     </nav>
 
     <main class="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
-      <UiNotice v-if="status?.apply_error" tone="error" title="The configuration isn't applied" class="mb-6">
+      <UiNotice v-if="status?.apply_error" tone="error" title="The configuration couldn't be applied" class="mb-6">
         <p class="break-words">{{ status.apply_error }}</p>
-        <p class="mt-1">The server tries again every few seconds. Check the log of the container.</p>
+        <p class="mt-1">Authway Server retries every few seconds. Check the container log for details.</p>
       </UiNotice>
-      <UiNotice v-if="status?.host_changes?.length" tone="warning" title="The address of the Docker host changed" class="mb-6">
+      <UiNotice v-if="status?.host_changes?.length" tone="warning" title="The Docker host's address changed" class="mb-6">
         <p>
-          The router of the networks of the routed servers still sends the tunnels to the address of before, so the networks
-          don't answer the peers. Change these routes on the router:
+          Your router still sends VPN traffic for the routed servers to the old address, so your networks can't reach the
+          peers. Update these routes on the router:
         </p>
         <ul class="mt-1.5 space-y-0.5">
           <li v-for="change in status.host_changes" :key="change.tunnel" class="break-words">
@@ -190,9 +190,9 @@ async function logout() {
             <span class="opacity-75"> · since {{ dateTime(change.at) }}</span>
           </li>
         </ul>
-        <p class="mt-1.5">Give the Docker host a fixed address, a DHCP reservation for example, so it doesn't change again.</p>
+        <p class="mt-1.5">Give the Docker host a fixed address (a DHCP reservation, for example) so this doesn't happen again.</p>
         <div v-if="isAdmin()" class="mt-3">
-          <UiButton size="sm" icon="check" :loading="confirming" @click="confirmRoutes">The router has the new routes</UiButton>
+          <UiButton size="sm" icon="check" :loading="confirming" @click="confirmRoutes">I've updated the router</UiButton>
         </div>
         <p v-else class="mt-1.5">An Administrator clears this warning once the router has the new routes.</p>
       </UiNotice>

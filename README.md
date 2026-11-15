@@ -16,7 +16,7 @@ exists. Authway Server lets you choose, for each server, how much a copy is wort
 
 - **The login**, on a server with *password* or *password and authenticator code*: a copy connects, but reaches only
   the login page without the password of the user, and the code of their authenticator app.
-- **The lock to the public IP of the login**: with the *strict* lock, the session pauses whenever the peer sends from
+- **The lock to the public IP of the login**, on by default: the session pauses whenever the peer sends from
   another public IP than at the login, so a copy used from another network gets nothing while the user is logged
   in.
 - **Two devices with the same key**: when the real device and a copy are both on, the session ends, an alert is

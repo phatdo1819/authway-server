@@ -26,7 +26,7 @@ async function start() {
   error.value = passwordError.value = codeError.value = ''
   code.value = ''
   if (!password.value) {
-    passwordError.value = 'Type your password.'
+    passwordError.value = 'Enter your password.'
     return
   }
   busy.value = true
@@ -51,7 +51,7 @@ function grouped(secret: string): string {
 async function confirm() {
   error.value = codeError.value = ''
   if (!/^\d{6}$/.test(code.value.trim())) {
-    codeError.value = 'Type the 6 digits of the app.'
+    codeError.value = 'Enter the 6-digit code from the app.'
     return
   }
   busy.value = true
@@ -77,7 +77,7 @@ async function confirm() {
 <template>
   <div class="space-y-4 text-sm">
     <form v-if="!setup" class="space-y-4" novalidate @submit.prevent="start">
-      <p class="text-slate-600 dark:text-slate-300">Type your password to set up an authenticator app.</p>
+      <p class="text-slate-600 dark:text-slate-300">Enter your password to set up an authenticator app.</p>
       <UiInput v-model="password" label="Your password" type="password" autocomplete="current-password" :error="passwordError" />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
       <div class="flex justify-end gap-3">
@@ -88,15 +88,15 @@ async function confirm() {
     <template v-else>
       <ol class="list-decimal space-y-1 pl-5 text-slate-600 dark:text-slate-300">
         <li>Scan this code with an authenticator app, such as Google Authenticator, Microsoft Authenticator or 2FAS.</li>
-        <li>Type the code that the app shows.</li>
+        <li>Enter the code the app shows.</li>
       </ol>
-      <QrCode :text="setup.uri" :label="`QR code of the authenticator of ${session.me?.username ?? ''}`" />
+      <QrCode :text="setup.uri" :label="`Authenticator QR code for ${session.me?.username ?? ''}`" />
       <div>
-        <p class="text-xs text-slate-500">Or type this key in the app:</p>
+        <p class="text-xs text-slate-500">Or enter this key in the app manually:</p>
         <p class="mt-1 font-mono text-sm break-all select-all">{{ grouped(setup.secret) }}</p>
       </div>
       <form class="space-y-4" novalidate @submit.prevent="confirm">
-        <UiInput v-model="code" label="Code of the app" autocomplete="one-time-code" placeholder="123456" mono :error="codeError" />
+        <UiInput v-model="code" label="Code from the app" autocomplete="one-time-code" placeholder="123456" mono :error="codeError" />
         <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
         <div class="flex justify-end gap-3">
           <UiButton v-if="cancellable" @click="emit('cancel')">Cancel</UiButton>

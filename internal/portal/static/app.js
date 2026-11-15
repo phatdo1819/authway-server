@@ -1,12 +1,12 @@
 "use strict";
 
 const PROBLEMS = {
-  forbidden: "This page works only through the VPN. Connect it, then open this page again.",
-  blocked: "This VPN configuration is blocked. Ask your administrator.",
-  no_user: "This VPN configuration isn't linked to a user. Ask your administrator.",
-  no_otp: "Your account has no authenticator app set up. Ask your administrator.",
-  device_required: "This VPN accepts only the Authway app on your enrolled computer.",
-  unreachable: "The server doesn't answer. Check that the VPN is connected.",
+  forbidden: "This page only works over the VPN. Connect to the VPN, then open this page again.",
+  blocked: "This VPN configuration has been blocked. Contact your administrator.",
+  no_user: "This VPN configuration isn't assigned to a user. Contact your administrator.",
+  no_otp: "Your account doesn't have an authenticator app set up yet. Contact your administrator.",
+  device_required: "This VPN only accepts logins from the Authway app on your enrolled computer.",
+  unreachable: "The server isn't responding. Check that the VPN is connected.",
 };
 
 const LOGIN_ERRORS = {
@@ -16,8 +16,8 @@ const LOGIN_ERRORS = {
   blocked: PROBLEMS.blocked,
   forbidden: PROBLEMS.forbidden,
   device_required: PROBLEMS.device_required,
-  device_mismatch: "This VPN configuration is enrolled on another device. Ask your administrator.",
-  device_not_enrolled: "No device can be enrolled for this VPN configuration now. Ask your administrator.",
+  device_mismatch: "This VPN configuration is registered to another device. Contact your administrator.",
+  device_not_enrolled: "This VPN configuration can't enroll a new device right now. Contact your administrator.",
   challenge_expired: "The login took too long. Try again.",
 };
 
@@ -71,6 +71,11 @@ function schedule(seconds) {
 
 async function load() {
   const { status, data } = await call("GET", "api/status");
+  if (status === 429) {
+    // too many requests from this address: the same page again a little later
+    schedule(data.retry_after || 10);
+    return;
+  }
   if (status !== 200) {
     problem(data.error);
     return;
@@ -138,7 +143,7 @@ async function login(event) {
     setError(`Too many attempts. Wait ${seconds} seconds, then try again.`);
     return;
   }
-  setError(LOGIN_ERRORS[data.error] || "The login failed. Try again in a moment.");
+  setError(LOGIN_ERRORS[data.error] || "Login failed. Try again in a moment.");
 }
 
 async function logout() {

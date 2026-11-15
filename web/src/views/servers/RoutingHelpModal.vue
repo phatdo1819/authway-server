@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue'
 
+import { anyAddressOf } from '../../addresses'
 import UiButton from '../../components/UiButton.vue'
 import UiModal from '../../components/UiModal.vue'
 import UiNotice from '../../components/UiNotice.vue'
+import type { RouterRoute } from '../../routing'
 
-// NAT or routed, with a drawing of one peer and one computer of the network. routed: the mode shown first
-const props = defineProps<{ open: boolean; routed: boolean }>()
+// NAT or routed, with a drawing of one peer and one computer of the network. routed: the mode shown first. route: the
+// route of the router for the server, see routerRoute, null while the address of Authway Server isn't known
+const props = defineProps<{ open: boolean; routed: boolean; route: RouterRoute | null }>()
 const emit = defineEmits<{ close: [] }>()
 
 const shown = ref(props.routed)
@@ -19,20 +22,26 @@ watch(
   },
 )
 
-// the example addresses of the drawing and of the text
-const peer = '10.8.0.5'
-const tunnel = '10.8.0.0/24'
-const authway = '192.168.1.50'
-const computer = '192.168.1.20'
-const lan = '192.168.1.0/24'
+// the addresses of the drawing and of the text: the ones of the server, with x for any peer and any computer, once
+// the address of Authway Server in its network is known; examples until then
+const real = computed(() => props.route)
+const tunnel = computed(() => real.value?.tunnel ?? '10.8.0.0/24')
+const lan = computed(() => real.value?.network ?? '192.168.1.0/24')
+const authway = computed(() => real.value?.via ?? '192.168.1.50')
+const peer = computed(() => (real.value ? anyAddressOf(real.value.tunnel, 2) : '10.8.0.5'))
+const computer = computed(() => (real.value ? anyAddressOf(real.value.network, 20) : '192.168.1.20'))
+// the address of Authway Server is the one of the Docker host, compose.host-routes.yaml, or of its container. With
+// the example addresses, both ways show it
+const throughHost = computed(() => !real.value || real.value.dockerHost)
+const ownAddress = computed(() => !real.value || !real.value.dockerHost)
 
 const id = useId()
 const arrowSent = `${id}-sent`
 const arrowAnswer = `${id}-answer`
 const description = computed(() =>
   shown.value
-    ? `The peer ${peer} sends through the WireGuard tunnel to Authway Server, which keeps the address: the computer ${computer} sees ${peer}. ${peer} isn't in the local network, so the computer sends the answer to its router, which sends it to Authway Server with the route ${tunnel} via ${authway}.`
-    : `The peer ${peer} sends through the WireGuard tunnel to Authway Server, which replaces the address with its own: the computer ${computer} sees ${authway} and answers it directly. Nothing to set up on the router.`,
+    ? `The peer ${peer.value} sends traffic through the WireGuard tunnel to Authway Server, which keeps the peer's address, so the computer ${computer.value} sees ${peer.value}. Because ${peer.value} isn't on the local network, the computer sends its reply to the router, which passes it to Authway Server using the route ${tunnel.value} via ${authway.value}.`
+    : `The peer ${peer.value} sends traffic through the WireGuard tunnel to Authway Server, which replaces the peer's address with its own, so the computer ${computer.value} sees ${authway.value} and replies to it directly. No router changes needed.`,
 )
 const modes = [
   { routed: false, label: 'NAT' },
@@ -41,7 +50,7 @@ const modes = [
 </script>
 
 <template>
-  <UiModal :open="open" title="NAT or routed" wide @close="emit('close')">
+  <UiModal :open="open" title="NAT or routed mode" wide @close="emit('close')">
     <div class="space-y-4">
       <p>What the computers of the networks of a server see when its peers connect to them.</p>
 
@@ -145,14 +154,14 @@ const modes = [
           <template v-if="!shown">
             <line x1="500" y1="112" x2="356" y2="112" stroke-width="2" style="stroke: var(--chart-2)" :marker-end="`url(#${arrowAnswer})`" />
             <text x="426" y="132" text-anchor="middle" class="fill-slate-600 text-[12px] dark:fill-slate-300">
-              answer to <tspan class="font-mono">{{ authway }}</tspan>
+              reply to <tspan class="font-mono">{{ authway }}</tspan>
             </text>
           </template>
           <template v-else>
             <path d="M560 128V203H542" fill="none" stroke-width="2" style="stroke: var(--chart-2)" :marker-end="`url(#${arrowAnswer})`" />
             <path d="M314 203H292V132" fill="none" stroke-width="2" style="stroke: var(--chart-2)" :marker-end="`url(#${arrowAnswer})`" />
             <text x="552" y="162" text-anchor="end" class="fill-slate-600 text-[12px] dark:fill-slate-300">
-              answer to <tspan class="font-mono">{{ peer }}</tspan>
+              reply to <tspan class="font-mono">{{ peer }}</tspan>
             </text>
           </template>
 
@@ -163,7 +172,7 @@ const modes = [
 
           <!-- Authway Server, and what it does with the address -->
           <text x="292" y="62" text-anchor="middle" class="fill-slate-700 text-[12px] font-medium dark:fill-slate-200">
-            {{ shown ? 'keeps the address' : 'replaces the address' }}
+            {{ shown ? "keeps the peer's address" : "uses its own address" }}
           </text>
           <rect x="232" y="72" width="120" height="56" rx="10" class="fill-white stroke-sky-600 dark:fill-slate-900 dark:stroke-sky-400" stroke-width="1.5" />
           <text x="292" y="95" text-anchor="middle" class="fill-slate-800 text-[13px] font-semibold dark:fill-slate-100">Authway Server</text>
@@ -181,7 +190,7 @@ const modes = [
             {{ tunnel }} via {{ authway }}
           </text>
           <text v-else x="426" y="217" text-anchor="middle" class="fill-slate-500 text-[12px] dark:fill-slate-400">
-            nothing to set up
+            no changes needed
           </text>
         </svg>
       </div>
@@ -193,71 +202,75 @@ const modes = [
         <li class="flex items-center gap-2">
           <span class="h-0.5 w-5 rounded" style="background: var(--chart-2)" />The answer
         </li>
-        <li>Example addresses</li>
+        <li>{{ real ? "This server's addresses" : 'Example addresses' }}</li>
       </ul>
 
       <ul v-if="!shown" class="list-disc space-y-1.5 pl-5">
         <li>
-          Authway Server replaces the address of the peer with its own: the computers of the network see every peer as
-          <span class="font-mono">{{ authway }}</span>. On the Docker bridge of compose.yaml, that's the address of the
-          Docker host.
+          Authway Server replaces each peer's address with its own, so computers on the network see every peer as
+          <span class="font-mono">{{ authway }}</span>. With the default compose.yaml setup, that's the Docker host's
+          address.
         </li>
-        <li>They answer that address directly: nothing to set up on the router.</li>
-        <li>Their logs and firewall rules can't tell the peers apart, and they can't start connections to the peers.</li>
-        <li>Works on any Docker host: a virtual machine, Wi-Fi, a cloud server.</li>
+        <li>They reply to that address directly, so no router changes are needed.</li>
+        <li>Their logs and firewall rules can't tell peers apart, and they can't open connections to peers.</li>
+        <li>Works on any Docker host: a virtual machine, Wi-Fi or a cloud server.</li>
       </ul>
       <template v-else>
         <ul class="list-disc space-y-1.5 pl-5">
           <li>
-            Authway Server keeps the address of the peer: the computers see <span class="font-mono">{{ peer }}</span>,
-            and their logs and firewall rules can tell the peers apart.
+            Authway Server keeps each peer's address, so computers see <span class="font-mono">{{ peer }}</span>, and
+            their logs and firewall rules can tell peers apart.
           </li>
           <li>
-            <span class="font-mono">{{ peer }}</span> isn't in the local network, so they send the answer to their
-            router: it needs a route to the tunnel network through Authway Server,
-            <span class="font-mono">{{ tunnel }} via {{ authway }}</span>. The panel of the server shows the one to add.
+            <span class="font-mono">{{ peer }}</span> isn't on the local network, so they send replies to their
+            router. The router needs a route to the VPN network through Authway Server:
+            <span class="font-mono">{{ tunnel }} via {{ authway }}</span>.
+            <template v-if="!real">Each server's panel shows the exact route to add.</template>
           </li>
           <li>
-            Two ways to run it, the System page checks both:
+            There are two ways to set this up, and the System page checks both:
             <ul class="mt-1 list-[circle] space-y-1 pl-5">
               <li>
-                <span class="font-medium">Through the Docker host</span>, with compose.host-routes.yaml: the container
-                stays on the Docker bridge, and a helper adds on the Docker host the route on to the container.
-                <span class="font-mono">{{ authway }}</span> is the address of the Docker host. Works on a virtual
-                machine and on Wi-Fi.
+                <span class="font-medium">Through the Docker host</span>, with compose.host-routes.yaml. The container
+                stays on Docker's default network, and a helper adds a route on the Docker host that forwards VPN traffic
+                to it.
+                <template v-if="throughHost"><span class="font-mono">{{ authway }}</span> is the Docker host's address.</template>
+                Works on virtual machines and over Wi-Fi.
+                <template v-if="real && throughHost">This Authway Server is set up this way.</template>
               </li>
               <li>
-                <span class="font-medium">An address of its own</span>, with compose.macvlan.yaml: the container is on
-                the local network itself, at <span class="font-mono">{{ authway }}</span>. The Docker host can't reach
-                it then, and a virtual machine needs promiscuous mode, below.
+                <span class="font-medium">Its own address</span>, with compose.macvlan.yaml. The container joins the
+                local network directly<template v-if="ownAddress">, at <span class="font-mono">{{ authway }}</span></template>.
+                The Docker host itself can't reach it, and a virtual machine needs promiscuous mode (see below).
+                <template v-if="real && ownAddress">This Authway Server is set up this way.</template>
               </li>
             </ul>
           </li>
           <li>
-            Only the networks of the server are routed: what the peers send to the internet still goes out with the
-            address of Authway Server.
+            Only the server's networks are routed. Internet traffic from peers still goes out with Authway Server's
+            address.
           </li>
           <li>
-            With "The networks start connections to the peers", the computers can also connect to the peers: to the
-            peers logged in only, on a server with a login.
+            With "Allow your networks to connect to peers" turned on, computers can also open connections to peers. On
+            servers that require a login, only logged-in peers can be reached.
           </li>
         </ul>
         <UiNotice title="compose.macvlan.yaml on a virtual machine">
           <p>
-            macvlan gives the container a MAC address of its own, and the virtual switch of the hypervisor has to let
-            it through, in promiscuous mode. Until then the network gets no answer from the container. Through the
-            Docker host, none of this is needed.
+            macvlan gives the container its own MAC address, so the hypervisor's virtual switch must allow it by enabling
+            promiscuous mode. Until then, the network gets no replies from the container. None of this is needed when
+            routing through the Docker host.
           </p>
           <ul class="mt-1.5 list-disc space-y-1 pl-5">
             <li>VMware Fusion: Settings, Network: uncheck "Require authentication to enter promiscuous mode"</li>
-            <li>VMware ESXi: Promiscuous mode and Forged transmits on Accept, for the port group of the VM</li>
-            <li>Hyper-V: Enable MAC address spoofing, in the advanced features of the network adapter of the VM</li>
-            <li>VirtualBox: Promiscuous Mode on Allow All, for the bridged adapter</li>
-            <li>Proxmox: works on its bridge; with the firewall of the VM on, turn its MAC filter off</li>
+            <li>VMware ESXi: set Promiscuous mode and Forged transmits to Accept on the VM's port group</li>
+            <li>Hyper-V: turn on Enable MAC address spoofing in the advanced features of the VM's network adapter</li>
+            <li>VirtualBox: set Promiscuous Mode to Allow All on the bridged adapter</li>
+            <li>Proxmox: works on its bridge; if the VM's firewall is on, turn off its MAC filter</li>
           </ul>
           <p class="mt-1.5">
-            A host on Wi-Fi can't: use a cable. Most cloud servers can't either: their network knows only the MAC
-            address of the VM. Go through the Docker host there.
+            This doesn't work over Wi-Fi, so use a cable. Most cloud servers don't support it either, because their
+            network only knows the VM's MAC address. Route through the Docker host instead.
           </p>
         </UiNotice>
       </template>

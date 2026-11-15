@@ -241,7 +241,7 @@ const summary = computed(() => {
     return `${props.label}: no values yet.`
   }
   const now = props.series.map((series) => `${series.name} ${format(series.values[last])}`).join(', ')
-  return `${props.label}. Now: ${now}. Highest: ${format(highest())}. Arrow keys move along the time.`
+  return `${props.label}. Now: ${now}. Highest: ${format(highest())}. Use the arrow keys to move through time.`
 })
 
 // the table of the values: 60 rows at most, the newest first
@@ -335,7 +335,7 @@ const rows = computed(() => {
         </g>
       </svg>
       <p v-if="!visible" class="absolute inset-0 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400">
-        No values yet: the first ones come within 10 seconds.
+        No data yet. The first values appear within 10 seconds.
       </p>
       <div
         v-if="hover >= 0"

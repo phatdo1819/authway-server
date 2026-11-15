@@ -11,8 +11,9 @@ Once Authway Server is [installed](install.md):
    app. In **Settings**, check the password policy, and require an authenticator of every administrator if you want.
    **Administrators** adds the other administrators, each with its role.
 3. **Add the users**, in **Users**, each with a password. For the servers that ask for a code, set up their
-   authenticator: the user scans the QR code with their app. Many at once: **Import**, from a CSV file of usernames, full
-   names and passwords.
+   authenticator (**Set up**, under Authenticator): the user scans the QR code with their app, and you can type a code
+   from the app to check it worked. Until a code has worked, the list shows **Waiting for first code**. Many at once:
+   **Import**, from a CSV file of usernames, full names and passwords.
 4. **Add a WireGuard server**, in **WireGuard servers > Add server**:
    - a name, the public address (the one of the install, proposed) and the UDP port: 51820 for the first, forwarded
      by your router;
@@ -67,8 +68,9 @@ On a server with **password**, or **password and authenticator code**:
    **Log out**, on the page, ends the session at once.
 
 On a phone it's the same, in its browser. A phone that moves from Wi-Fi to mobile data gets a new public IP: on a
-server with the **strict** lock, its session pauses, and ends after 5 minutes: the user logs in again. Choose
-**Roaming** for the servers of devices that move a lot: see [Good to know](good-to-know.md#peers-and-devices).
+server with the **lock to the public IP of the login**, on by default, its session pauses, and ends after 5 minutes:
+the user logs in again. Turn the lock off for the servers of devices that move a lot: see
+[Good to know](good-to-know.md#peers-and-devices).
 
 On a server with **device binding**, the browser and the WireGuard apps can't log in: the login has to be signed by the
 enrolled computer, which only Authway does.

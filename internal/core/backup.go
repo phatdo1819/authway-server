@@ -54,6 +54,8 @@ type backupSettings struct {
 	EnrollHours int `json:"enroll_hours"`
 	// 0 when never set, and in the backups made before it: the default
 	HistoryDays int `json:"history_days,omitempty"`
+	// nil when never set, and in the backups made before it: the default. 0 is off.
+	AdminRememberDays *int `json:"admin_remember_days,omitempty"`
 }
 
 // backupDevice is the device of a peer, or its enrollment: a restore on a new host keeps the devices enrolled,
@@ -93,9 +95,11 @@ type backupUser struct {
 	FullName     string `json:"full_name"`
 	PasswordHash string `json:"password_hash"`
 	TOTPSecret   string `json:"totp_secret"`
-	Disabled     bool   `json:"disabled"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	// 0 in the backups of up to 0.2.0: the key waits for its first code again
+	TOTPConfirmedAt int64 `json:"totp_confirmed_at,omitempty"`
+	Disabled        bool  `json:"disabled"`
+	CreatedAt       int64 `json:"created_at"`
+	UpdatedAt       int64 `json:"updated_at"`
 }
 
 type backupServer struct {
@@ -249,6 +253,14 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 	if stored != "" {
 		days = s.historyDaysLocked()
 	}
+	var remember *int
+	if stored, err = q.Meta(metaRememberDays); err != nil {
+		return nil, err
+	}
+	if stored != "" {
+		days := s.adminRememberDaysLocked()
+		remember = &days
+	}
 	version := s.opts.Version
 	if version == "" {
 		version = "dev"
@@ -256,7 +268,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 	content := &backupContent{
 		Version: BackupVersion, CreatedAt: now.Unix(), MadeBy: "Authway Server " + version,
 		Settings: backupSettings{PublicHost: host, PasswordPolicy: s.policyLocked(), RequireAdminMFA: s.requireAdminMFALocked(),
-			EnrollHours: hours, HistoryDays: days},
+			EnrollHours: hours, HistoryDays: days, AdminRememberDays: remember},
 		Admins: []backupAdmin{}, Users: []backupUser{}, Servers: []backupServer{}, Peers: []backupPeer{},
 		Devices: []backupDevice{},
 	}
@@ -278,7 +290,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 	for _, u := range users {
 		content.Users = append(content.Users, backupUser{
 			ID: u.ID, Username: u.Username, FullName: u.FullName, PasswordHash: u.PasswordHash, TOTPSecret: u.TOTPSecret,
-			Disabled: u.Disabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+			TOTPConfirmedAt: u.TOTPConfirmedAt, Disabled: u.Disabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 		})
 	}
 	servers, err := q.Servers()
@@ -409,9 +421,13 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 		if plan.settings.HistoryDays != 0 {
 			days = strconv.Itoa(plan.settings.HistoryDays)
 		}
+		remember := ""
+		if plan.settings.AdminRememberDays != nil {
+			remember = strconv.Itoa(*plan.settings.AdminRememberDays)
+		}
 		for key, value := range map[string]string{
 			"public_host": plan.settings.PublicHost, "password_policy": string(policy), "require_admin_mfa": mfa,
-			"enroll_hours": hours, "history_days": days,
+			"enroll_hours": hours, "history_days": days, metaRememberDays: remember,
 		} {
 			if err := tx.SetMeta(key, value); err != nil {
 				return err
@@ -448,11 +464,11 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 		// nothing changed: the transaction is undone
 		return nil, err
 	}
-	// what's in memory was about the configuration before: the ids of the backup can be of other peers and users
+	// what's in memory was about the configuration before: the ids of the backup can be of other peers and users.
+	// The codes used are kept: a code used just before the restore doesn't work again after it, and one of another
+	// user with the same id is refused for 3 minutes at most.
 	s.failures = newLoginFailures()
 	s.copies = map[int64]*copyTrack{}
-	s.usedCodes = map[int64]map[uint64]time.Time{}
-	s.usedAdminCodes = map[int64]map[uint64]time.Time{}
 	s.pendingTOTP = map[int64]pendingSecret{}
 	s.challenges = challenges{}
 	s.mismatches = map[int64]time.Time{}
@@ -501,6 +517,14 @@ func openBackup(data []byte, passphrase string) (*backupContent, error) {
 	return &content, nil
 }
 
+// confirmedAt is when the authenticator of a user of a backup first worked: never without a key, nor in the future
+func confirmedAt(b backupUser) int64 {
+	if b.TOTPSecret == "" || b.TOTPConfirmedAt < 0 {
+		return 0
+	}
+	return b.TOTPConfirmedAt
+}
+
 func badBackup(format string, args ...any) error {
 	return &ValidationError{Fields: map[string]string{"backup": "invalid_content"}, Detail: fmt.Sprintf(format, args...)}
 }
@@ -530,6 +554,9 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 	if days := plan.settings.HistoryDays; days != 0 && (days < 1 || days > MaxHistoryDays) {
 		return nil, badBackup("the days of the history aren't valid")
 	}
+	if days := plan.settings.AdminRememberDays; days != nil && (*days < 0 || *days > MaxAdminRememberDays) {
+		return nil, badBackup("the days administrator devices are remembered aren't valid")
+	}
 
 	userIDs := map[int64]bool{}
 	usernames := map[string]bool{}
@@ -553,7 +580,8 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 		usernames[strings.ToLower(name)] = true
 		plan.users = append(plan.users, store.User{
 			ID: b.ID, Username: name, FullName: strings.TrimSpace(b.FullName), PasswordHash: b.PasswordHash,
-			TOTPSecret: b.TOTPSecret, Disabled: b.Disabled, CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt,
+			TOTPSecret: b.TOTPSecret, TOTPConfirmedAt: confirmedAt(b), Disabled: b.Disabled, CreatedAt: b.CreatedAt,
+			UpdatedAt: b.UpdatedAt,
 		})
 	}
 

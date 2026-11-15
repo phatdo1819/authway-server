@@ -69,8 +69,8 @@ onMounted(load)
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">WireGuard servers</h1>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Each server has its own port, network and peers. A server with login lets its peers through only after their
-          user logs in.
+          Each server has its own port, network and peers. On servers that require a login, a peer's traffic only gets
+          through after its user logs in.
         </p>
       </div>
       <UiButton v-if="servers.length && isAdmin()" variant="primary" icon="plus" @click="add">Add server</UiButton>
@@ -84,8 +84,8 @@ onMounted(load)
       v-else-if="!servers.length && !error"
       class="mt-8"
       icon="server"
-      title="No WireGuard server yet"
-      text="Add a server, then its peers: each peer gets a configuration file for the WireGuard apps or for Authway."
+      title="No WireGuard servers yet"
+      text="Add a server, then add its peers. Each peer gets a configuration file for the WireGuard apps or the Authway app."
     >
       <UiButton v-if="isAdmin()" variant="primary" icon="plus" @click="add">Add server</UiButton>
     </UiEmpty>

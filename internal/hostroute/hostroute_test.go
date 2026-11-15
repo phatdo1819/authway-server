@@ -217,9 +217,16 @@ func TestRefusedRoutes(t *testing.T) {
 		{Want{Tunnel: "10.8.1.0/24", Via: "172.18.0.1", Network: "192.168.100.0/24"}, "is an address of the Docker host"},
 		{Want{Tunnel: "10.8.1.0/24", Via: "10.1.1.1", Network: "192.168.100.0/24"}, "isn't on a network of the Docker host"},
 		{Want{Tunnel: "192.168.100.0/25", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "overlaps 192.168.100.0/24"},
-		{Want{Tunnel: "172.16.0.0/12", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "holds the address of the container"},
+		{Want{Tunnel: "172.16.0.0/12", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "includes the container's own address"},
 		{Want{Tunnel: "0.0.0.0/0", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "the whole internet"},
 		{Want{Tunnel: "10.20.0.0/24", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "already has a route to 10.20.0.0/24, through 192.168.100.1"},
+		// what the server never asks for: a container taken over can't send destinations of the internet to itself
+		{Want{Tunnel: "8.8.8.0/24", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "isn't a private network"},
+		{Want{Tunnel: "10.8.1.7/32", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "/16 to /29"},
+		{Want{Tunnel: "10.0.0.0/8", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "/16 to /29"},
+		{Want{Tunnel: "2001:4860::/32", Via: "fdae:1::2", Network: "fd00:db80::/64"}, "/64 to /120"},
+		{Want{Tunnel: "ff05::/64", Via: "fdae:1::2", Network: "fd00:db80::/64"}, "global or unique local"},
+		{Want{Tunnel: "2001:4860:4860::/64", Via: "fdae:1::2", Network: "fd00:db80::/64"}, "AUTHWAY_ROUTE_PUBLIC"},
 		{Want{Tunnel: "10.8.1.0/24", Via: "fdae:1::2", Network: "192.168.100.0/24"}, "invalid"},
 		{Want{Tunnel: "nonsense", Via: "172.18.0.2", Network: "192.168.100.0/24"}, "invalid"},
 	}
@@ -231,6 +238,33 @@ func TestRefusedRoutes(t *testing.T) {
 	}
 	if calls := host.takeCalls(); calls != "" {
 		t.Errorf("calls: %s", calls)
+	}
+}
+
+// The public tunnel networks the Docker host lists are routed; the others still aren't.
+func TestPublicTunnels(t *testing.T) {
+	host := newFakeHost()
+	h := newHelper(t, host)
+	h.Public = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8:77::/48")}
+	cases := []struct {
+		tunnel string
+		routed bool
+	}{
+		{"203.0.113.0/26", true},
+		{"203.0.112.0/23", false}, // holds the listed network, isn't in it
+		{"198.51.100.0/24", false},
+		{"2001:db8:77:1::/64", true},
+		{"2001:db8:78::/64", false},
+	}
+	for _, c := range cases {
+		route := Want{Tunnel: c.tunnel, Via: "172.18.0.2", Network: "192.168.100.0/24"}
+		if strings.Contains(c.tunnel, ":") {
+			route = Want{Tunnel: c.tunnel, Via: "fdae:1::2", Network: "fd00:db80::/64"}
+		}
+		state := want(t, h, Wanted{Addresses: []string{"172.18.0.2", "fdae:1::2"}, Routes: []Want{route}}).Routes[0]
+		if refused := strings.Contains(state.Error, "AUTHWAY_ROUTE_PUBLIC"); refused == c.routed {
+			t.Errorf("%s: %+v", c.tunnel, state)
+		}
 	}
 }
 

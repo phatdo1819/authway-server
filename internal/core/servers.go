@@ -461,7 +461,10 @@ func (s *Service) checkServer(input ServerInput, server *store.Server, servers [
 	switch lock {
 	case "":
 		lock = store.LockStrict
-	case store.LockStrict, store.LockRoaming, store.LockOff:
+	// off, from the backups and the clients of up to 0.2.0: the lock is off
+	case store.LockOff:
+		lock = store.LockRoaming
+	case store.LockStrict, store.LockRoaming:
 	default:
 		c.fail("lock_endpoint", "invalid")
 	}

@@ -2,7 +2,8 @@
 // ones without it, which a page of another site can't send.
 
 export type AuthMode = 'key' | 'password' | 'password_otp'
-export type LockMode = 'strict' | 'roaming' | 'off'
+// strict: the session is locked to the public IP of the login; roaming: the lock is off, it follows the device
+export type LockMode = 'strict' | 'roaming'
 
 export interface Server {
   id: number
@@ -222,6 +223,9 @@ export interface User {
   full_name: string
   disabled: boolean
   totp: boolean
+  // when a code of the authenticator first worked, at a login or checked by an administrator: 0 while nobody has
+  // shown that the key was scanned
+  totp_confirmed_at: number
   peers: string[]
   sessions: number
   created_at: number
@@ -431,6 +435,8 @@ export interface Settings {
   enroll_hours: number
   // the days Activity keeps the history
   history_days: number
+  // the days an administrator can log in from a remembered browser without a code, 0 when off
+  admin_remember_days: number
 }
 
 // admin: everything; operator: the users, the peers and the sessions; viewer: sees, changes nothing
@@ -552,8 +558,21 @@ export function setSetupRequiredHandler(handler: (step: SetupStep) => void) {
   onSetupRequired = handler
 }
 
+// The latest input of the administrator on the page. A request sent long after it is a refresh of the page by
+// itself, not a sign of someone there: it carries X-Background, and doesn't keep the session from ending when idle.
+const idleAfter = 60_000
+let lastInput = Date.now()
+if (typeof window !== 'undefined') {
+  for (const name of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+    window.addEventListener(name, () => (lastInput = Date.now()), { capture: true, passive: true })
+  }
+}
+
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const headers: Record<string, string> = { 'X-Requested-With': 'authway', Accept: 'application/json' }
+  if (Date.now() - lastInput > idleAfter) {
+    headers['X-Background'] = '1'
+  }
   const init: RequestInit = { method, headers, credentials: 'same-origin', cache: 'no-store' }
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
@@ -589,8 +608,8 @@ async function json<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export const api = {
-  login: (username: string, password: string, otp = '') =>
-    json<{ username: string; role: Role; setup: SetupStep }>('POST', '/login', { username, password, otp }),
+  login: (username: string, password: string, otp = '', remember = false) =>
+    json<{ username: string; role: Role; setup: SetupStep }>('POST', '/login', { username, password, otp, remember }),
   logout: () => json('POST', '/logout'),
   me: () => json<Me>('GET', '/me'),
   startTotp: (password: string) => json<TotpSetup>('POST', '/me/totp', { password }),
@@ -663,6 +682,8 @@ export const api = {
   deleteUser: (id: number) => json('DELETE', `/users/${id}`),
   setupTotp: (id: number) => json<TotpSetup>('POST', `/users/${id}/totp`),
   removeTotp: (id: number) => json('DELETE', `/users/${id}/totp`),
+  // a code from the app of the user, while the key waits for its first code
+  checkTotp: (id: number, code: string) => json<User>('PUT', `/users/${id}/totp`, { code }),
 
   sessions: () => json<Session[]>('GET', '/sessions'),
   endSession: (id: number) => json('DELETE', `/sessions/${id}`),

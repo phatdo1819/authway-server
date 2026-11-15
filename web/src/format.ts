@@ -1,24 +1,23 @@
 import type { AuthMode, LockMode, PasswordPolicy, Role } from './api'
 
-export const lockModes: { value: LockMode; label: string; description: string }[] = [
-  {
-    value: 'strict',
-    label: 'Strict',
-    description:
-      'The session pauses while the peer sends from another public IP than at login: another device has its key, or the device moved. It resumes when the IP comes back, and ends after 5 minutes. A user who moves logs in again.',
-  },
-  {
-    value: 'roaming',
-    label: 'Roaming',
-    description:
-      'The session follows the device to its new network. Two devices at once are still caught, but a copy used while the real device is off keeps the session.',
-  },
-  { value: 'off', label: 'Off', description: 'The public IP is ignored: for clients behind a NAT that changes their IP.' },
-]
-
-export function lockModeLabel(mode: LockMode): string {
-  return lockModes.find((entry) => entry.value === mode)?.label ?? mode
+// lockLabel says how the session of a server holds to the public IP of the login: a value this version doesn't know
+// says so, rather than read as unlocked
+export function lockLabel(lock: LockMode | string): string {
+  switch (lock) {
+    case 'strict':
+      return 'Locked to the login IP'
+    case 'roaming':
+      return 'Not locked to an IP'
+    default:
+      return `Unknown lock (${lock})`
+  }
 }
+
+// the lock of the session to the public IP of the login, on and off
+export const lockOn =
+  'If the device starts connecting from a different public IP than the one it logged in from, the session pauses. That usually means the device moved, or someone else is using its configuration. The session resumes if the original IP comes back, and ends after 5 minutes otherwise. Users who switch networks (from Wi-Fi to 4G, for example) have to log in again.'
+export const lockOff =
+  'Off: the session follows the device to a new network without a new login. Two devices using the same configuration at the same time are still detected, but a copy used while the real device is offline keeps the session.'
 
 const alertKinds: Record<string, string> = {
   copy: 'Used by two devices',
@@ -118,16 +117,16 @@ export function duration(seconds: number): string {
 }
 
 export const authModes: { value: AuthMode; label: string; description: string }[] = [
-  { value: 'key', label: 'WireGuard key only', description: 'The peers connect with their configuration file, no login.' },
+  { value: 'key', label: 'WireGuard key only', description: 'Peers connect with their configuration file alone. No login.' },
   {
     value: 'password',
     label: 'Password',
-    description: 'The peers log in with the password of their user before their traffic passes.',
+    description: 'Users log in with their password before the VPN lets their traffic through.',
   },
   {
     value: 'password_otp',
     label: 'Password and authenticator code',
-    description: 'The peers log in with the password and a code of an authenticator app.',
+    description: 'Users log in with their password and a code from an authenticator app.',
   },
 ]
 
@@ -136,13 +135,13 @@ export const routingModes: { value: boolean; label: string; description: string 
   {
     value: false,
     label: 'NAT',
-    description: 'The networks see the address of the container. Nothing to set up on the router.',
+    description: 'Your networks see all VPN traffic as coming from Authway Server. No router changes needed.',
   },
   {
     value: true,
     label: 'Routed',
     description:
-      'The networks see the address of each peer, for their logs and firewall rules. Their router needs a route to the tunnel networks through the Docker host, with compose.host-routes.yaml, or through the container on macvlan. The internet of the peers stays NAT.',
+      "Your networks see each peer's own VPN address, which is useful for logs and firewall rules. Your router needs a route back to the VPN through Authway Server (the server's panel shows which one). Internet traffic from peers still uses NAT.",
   },
 ]
 
@@ -153,12 +152,12 @@ export function authModeLabel(mode: AuthMode): string {
 const endReasons: Record<string, string> = {
   logout: 'Logged out',
   expired: 'Session expired',
-  idle: 'No handshake for 5 minutes',
+  idle: 'No traffic for 5 minutes',
   ended_by_admin: 'Ended by an administrator',
   peer_changed: 'Peer changed',
   user_changed: 'User changed',
   server_changed: 'Server changed',
-  endpoint_changed: 'Another public IP for 5 minutes',
+  endpoint_changed: 'Connected from another IP for 5 minutes',
   copy_suspected: 'Configuration used by two devices',
   blocked: 'Peer blocked',
   restored: 'Configuration restored',
@@ -181,15 +180,15 @@ const eventKinds: Record<string, string> = {
   admin_changed: 'Administrator changed',
   admin_deleted: 'Administrator deleted',
   admin_password_reset: 'Administrator password reset',
-  admin_password_changed: 'Administrator changed the password',
-  admin_mfa_on: 'Administrator authenticator set up',
-  admin_mfa_removed: 'Administrator authenticator removed',
+  admin_password_changed: 'Administrator changed their password',
+  admin_mfa_on: 'Administrator set up an authenticator',
+  admin_mfa_removed: "Administrator's authenticator removed",
   settings_changed: 'Settings changed',
   backup_made: 'Backup downloaded',
   backup_restored: 'Configuration restored',
   device_enrolled: 'Device enrolled',
-  device_mismatch: 'Another device',
-  device_key: 'Device made its own key',
+  device_mismatch: 'Login from a different device',
+  device_key: 'Device created its key',
   host_address_changed: 'Docker host address changed',
   // the changes made in the web UI
   server_added: 'Server added',
@@ -200,7 +199,7 @@ const eventKinds: Record<string, string> = {
   peer_changed: 'Peer changed',
   peer_deleted: 'Peer deleted',
   peer_keys: 'New keys for a peer',
-  peer_config: 'Configuration file opened',
+  peer_config: 'Configuration file viewed',
   session_ended: 'Session ended by an administrator',
   alerts_cleared: 'Alerts cleared',
   device_allowed: 'New device allowed',
@@ -208,8 +207,8 @@ const eventKinds: Record<string, string> = {
   user_added: 'User added',
   user_changed: 'User changed',
   user_deleted: 'User deleted',
-  user_mfa_on: 'User authenticator set up',
-  user_mfa_removed: 'User authenticator removed',
+  user_mfa_on: 'New authenticator for a user',
+  user_mfa_removed: "User's authenticator removed",
 }
 
 // the events of the web UI: the logins of the administrators and the changes (webKinds in internal/core/audit.go)
@@ -288,13 +287,13 @@ export function isWebEvent(kind: string): boolean {
 }
 
 export const roles: { value: Role; label: string; description: string }[] = [
-  { value: 'admin', label: 'Administrator', description: 'Everything: the servers, the administrators and the settings too.' },
+  { value: 'admin', label: 'Administrator', description: 'Full access, including servers, administrators and settings.' },
   {
     value: 'operator',
     label: 'Operator',
-    description: 'The users, the peers and their configuration files, the sessions and the alerts. Not the servers, the administrators or the settings.',
+    description: "Manages users, peers and their configuration files, sessions and alerts. Can't change servers, administrators or settings.",
   },
-  { value: 'viewer', label: 'Read-only', description: 'Sees the servers, the users and the activity. Changes nothing, and gets no configuration file.' },
+  { value: 'viewer', label: 'Read-only', description: "Can view servers, users and activity. Can't change anything or download configuration files." },
 ]
 
 export function roleLabel(role: Role): string {
@@ -319,7 +318,7 @@ export function policyText(policy: PasswordPolicy | undefined, admin = false): s
   if (needs.length) {
     text += ', with ' + (needs.length > 1 ? needs.slice(0, -1).join(', ') + ' and ' + needs[needs.length - 1] : needs[0])
   }
-  return text + ', without the username.'
+  return text + ". It can't contain the username."
 }
 
 // generatePassword makes a random password that follows any policy: 16 characters at least, easy to read and to
@@ -361,42 +360,45 @@ export function eventKind(kind: string): string {
 const messages: Record<string, string> = {
   required: 'Required.',
   invalid: 'Not valid.',
-  taken: 'Already used by another one.',
-  too_many: 'Too many.',
+  taken: 'Already in use.',
+  too_many: 'Too many entries.',
   too_short: 'Too short.',
   too_long: 'Too long.',
   size: 'Use a network from /16 to /29.',
   overlap: 'Two of these networks overlap.',
-  overlaps_tunnel: 'Overlaps a network of the tunnel.',
+  overlaps_tunnel: 'Overlaps the VPN network.',
   size6: 'Use an IPv6 network from /64 to /120.',
-  too_small: 'Smaller than the IPv4 network: each peer needs its address in both.',
-  needs_ipv6: 'An IPv6 network needs the IPv6 tunnel network: the peers have no IPv6 address without it.',
-  ipv6_off: 'IPv6 is off in the container: turn it on as compose.yaml does, then create the container again.',
-  no_networks: 'Add a network the peers reach: only those are routed, the internet of the peers stays NAT.',
-  has_peers: "Can't change while the server has peers: their configuration files have the old addresses.",
-  outside: 'Not inside the networks of the server.',
-  in_peer_access: 'A peer reaches part of a network taken away: change its networks first.',
+  too_small: 'Must be at least as large as the IPv4 network, because every peer gets an address in both.',
+  needs_ipv6: 'Set an IPv6 VPN network first. Without it, peers have no IPv6 address.',
+  ipv6_off: 'IPv6 is turned off for Authway Server. Enable it as compose.yaml shows, then recreate the container.',
+  no_networks: 'Add at least one network for peers to reach. Only these networks are routed; internet traffic still uses NAT.',
+  has_peers: "Can't be changed while the server has peers, because their configuration files use the current addresses.",
+  outside: "Not inside this server's networks.",
+  in_peer_access: 'A peer still has access to part of a network you removed. Change that peer first.',
   has_peer: 'This user already has a peer on this server.',
-  network_full: 'No address left in the network of the server.',
+  network_full: "No free addresses left in this server's network.",
   wrong: 'Wrong password.',
-  duplicate: 'An address appears twice, or is the public address of the server.',
+  duplicate: "An address is listed twice, or is the server's own public address.",
   needs_lower: 'Add a lowercase letter.',
   needs_upper: 'Add an uppercase letter.',
   needs_digit: 'Add a digit.',
   needs_symbol: 'Add a symbol or a space.',
   contains_username: "Can't contain the username.",
-  same: 'Choose another one than the current password.',
-  wrong_code: 'Wrong code: check the time of the phone, and type the latest code.',
-  own_account: "Can't change on your own account.",
-  last_admin: 'The last active Administrator keeps this role: give it to another one first.',
-  enroll_first: 'Set up your own authenticator first, in Your account.',
+  same: 'Choose a password different from the current one.',
+  wrong_code: "Wrong code. Make sure the phone's clock is correct, then enter the latest code.",
+  invalid_otp: "That code doesn't match. Make sure the phone's clock is correct, then enter the current code.",
+  no_otp: 'This user no longer has an authenticator.',
+  otp_in_use: 'This authenticator is already in use.',
+  own_account: "You can't change this on your own account.",
+  last_admin: 'This is the last active administrator. Give another account the Administrator role first.',
+  enroll_first: 'Set up your own authenticator first, under Your account.',
   same_server: "A server can't be in its own list.",
-  server_not_found: 'One of these servers no longer exists: reload the page.',
-  duplicate_server: 'A server appears twice.',
-  device_binding_not_required: "This server doesn't ask for a device.",
+  server_not_found: 'One of these servers no longer exists. Reload the page.',
+  duplicate_server: 'A server is listed twice.',
+  device_binding_not_required: "This server doesn't require enrolled devices.",
   // the rows of an import
-  twice: 'This username is on a row above too.',
-  extra_cells: 'More cells than the header has columns.',
+  twice: 'This username already appears in an earlier row.',
+  extra_cells: 'This row has more cells than the header has columns.',
 }
 
 export function fieldMessage(code: string | undefined): string {
@@ -410,33 +412,33 @@ export function errorMessage(error: unknown): string {
   const code = (error as { code?: string })?.code ?? ''
   switch (code) {
     case 'unreachable':
-      return "The server doesn't answer."
+      return "Authway Server isn't responding."
     case 'not_found':
-      return 'It no longer exists: reload the page.'
+      return 'This item no longer exists. Reload the page.'
     case 'validation':
-      return 'Check the fields in red.'
+      return 'Check the fields marked in red.'
     case 'changed':
-      return 'Another administrator saved it meanwhile: open it again.'
+      return 'Another administrator saved changes in the meantime. Open it again to see them.'
     case 'too_many_attempts':
-      return 'Too many attempts: wait a few minutes.'
+      return 'Too many attempts. Wait a few minutes and try again.'
     case 'invalid_credentials':
       return 'Wrong username or password.'
     case 'invalid_otp':
-      return 'Wrong code: type the latest code of the app.'
+      return 'Wrong code. Enter the latest code from your app.'
     case 'disabled':
-      return 'This account is disabled: ask another administrator.'
+      return 'This account is disabled. Ask another administrator for help.'
     case 'not_allowed':
       return "Your role can't do this."
     case 'setup_required':
-      return 'Finish the setup of your account first.'
+      return 'Finish setting up your account first.'
     case 'own_account':
       return "You can't do this on your own account."
     case 'last_admin':
-      return 'The last active Administrator stays: give the role to another one first.'
+      return 'This is the last active administrator. Give another account the Administrator role first.'
     case 'mfa_required':
-      return 'The settings ask an authenticator of every administrator: it can be replaced, not removed.'
+      return 'Settings require every administrator to use an authenticator. You can replace it, but not remove it.'
     case 'setup_expired':
-      return 'The setup took more than 10 minutes: start again.'
+      return 'Setup took longer than 10 minutes. Start again.'
     default:
       return 'Something went wrong. Try again.'
   }

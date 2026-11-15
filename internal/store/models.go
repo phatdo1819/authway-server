@@ -38,9 +38,12 @@ type User struct {
 	FullName     string
 	PasswordHash string
 	TOTPSecret   string
-	Disabled     bool
-	CreatedAt    int64
-	UpdatedAt    int64
+	// TOTPConfirmedAt is when a code of the authenticator first worked, at a login or checked by an administrator:
+	// 0 while nobody has shown that the key was scanned
+	TOTPConfirmedAt int64
+	Disabled        bool
+	CreatedAt       int64
+	UpdatedAt       int64
 	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
 	// web UI saved over a change made since it opened is refused
 	Version   int64
@@ -72,7 +75,7 @@ type Server struct {
 	Keepalive      int
 	AuthMode       string
 	SessionTimeout int // seconds
-	// what a session does when its peer sends from another public IP than at login: LockStrict, LockRoaming, LockOff
+	// what a session does when its peer sends from another public IP than at login: LockStrict or LockRoaming
 	LockEndpoint string
 	// watch the endpoints for two devices using the same key, and block the peer when it happens
 	DetectCopies bool
@@ -103,8 +106,10 @@ type Server struct {
 
 const (
 	LockStrict  = "strict"  // the session pauses, and ends after a while, until the peer sends from its login IP
-	LockRoaming = "roaming" // the session follows the peer to its new IP
-	LockOff     = "off"     // the IP is ignored
+	LockRoaming = "roaming" // the lock is off: the session follows the peer to its new IP
+	// LockOff ignored the IP, up to 0.2.0: it protected no more than LockRoaming. Open rewrites it in the database,
+	// and the API and the restores read it as LockRoaming
+	LockOff = "off"
 )
 
 // Gated tells whether the peers must log in.
@@ -336,13 +341,13 @@ func (t *Tx) DeleteAdmin(id int64) error {
 
 // Users
 
-const userColumns = "id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at, version, updated_by"
+const userColumns = "id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, version, updated_by"
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var disabled int
-	err := row.Scan(&u.ID, &u.Username, &u.FullName, &u.PasswordHash, &u.TOTPSecret, &disabled, &u.CreatedAt, &u.UpdatedAt,
-		&u.Version, &u.UpdatedBy)
+	err := row.Scan(&u.ID, &u.Username, &u.FullName, &u.PasswordHash, &u.TOTPSecret, &u.TOTPConfirmedAt, &disabled,
+		&u.CreatedAt, &u.UpdatedAt, &u.Version, &u.UpdatedBy)
 	u.Disabled = disabled != 0
 	return &u, err
 }
@@ -375,8 +380,8 @@ func (t *Tx) UserByName(username string) (*User, error) {
 }
 
 func (t *Tx) CreateUser(u *User) error {
-	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, disabled, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt, u.UpdatedBy)
+	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt, u.UpdatedBy)
 	if err != nil {
 		return conflict(err)
 	}
@@ -386,8 +391,15 @@ func (t *Tx) CreateUser(u *User) error {
 }
 
 func (t *Tx) UpdateUser(u *User) error {
-	return updated(t.q.QueryRow("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, disabled = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
-		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, boolInt(u.Disabled), u.UpdatedAt, u.UpdatedBy, u.ID), &u.Version)
+	return updated(t.q.QueryRow("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, totp_confirmed_at = ?, disabled = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
+		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.UpdatedAt, u.UpdatedBy, u.ID), &u.Version)
+}
+
+// ConfirmUserTOTP records the first code that worked with the authenticator of a user, once: not a change of an
+// administrator, so the version stays and no form open on the user is refused
+func (t *Tx) ConfirmUserTOTP(id, at int64) error {
+	_, err := t.q.Exec("UPDATE users SET totp_confirmed_at = ? WHERE id = ? AND totp_secret != '' AND totp_confirmed_at = 0", at, id)
+	return err
 }
 
 func (t *Tx) DeleteUser(id int64) error {
@@ -624,7 +636,7 @@ func (t *Tx) EndOpenSessions(at int64, reason string) (int64, error) {
 // ClearConfig deletes the configuration: the peers with their alerts and devices, the servers, the users and the
 // administrators. The history of the sessions and of the connections and the events stay.
 func (t *Tx) ClearConfig() error {
-	for _, table := range []string{"alerts", "devices", "peers", "servers", "users", "admins"} {
+	for _, table := range []string{"alerts", "devices", "peers", "servers", "users", "admin_devices", "admins"} {
 		if _, err := t.q.Exec("DELETE FROM " + table); err != nil {
 			return err
 		}

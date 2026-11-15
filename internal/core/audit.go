@@ -204,7 +204,7 @@ func serverChanges(before, after *store.Server, names map[int64]string) changes 
 	if before.SessionTimeout != after.SessionTimeout {
 		c.text("session length", hoursText(before.SessionTimeout), hoursText(after.SessionTimeout))
 	}
-	c.text("lock to the public IP", before.LockEndpoint, after.LockEndpoint)
+	c.toggle("lock to the public IP", before.LockEndpoint == store.LockStrict, after.LockEndpoint == store.LockStrict)
 	c.toggle("copy detection", before.DetectCopies, after.DetectCopies)
 	c.toggle("block copies", before.BlockCopies, after.BlockCopies)
 	c.toggle("lead to the login page", before.Redirect, after.Redirect)

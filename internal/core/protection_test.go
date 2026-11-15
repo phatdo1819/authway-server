@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -148,6 +149,17 @@ func TestRoaming(t *testing.T) {
 	session := f.session(peer.ID)
 	if session == nil || session.PausedAt != 0 || session.Endpoint != "198.51.100.9" || !f.net.Open("wg0", netip.MustParseAddr(peer.Address)) {
 		t.Fatalf("the session doesn't follow: %+v", session)
+	}
+}
+
+// off, from the backups and the clients of up to 0.2.0, is the lock off: the session follows the peer
+func TestLockOffOfBefore(t *testing.T) {
+	f := setup(t)
+	server := f.serverWith(store.AuthPassword, func(input *ServerInput) {
+		input.LockEndpoint = store.LockOff
+	})
+	if server.LockEndpoint != store.LockRoaming {
+		t.Fatalf("lock: %q", server.LockEndpoint)
 	}
 }
 
@@ -391,5 +403,72 @@ func TestStrictLockWithoutEndpoint(t *testing.T) {
 	f.s.Tick()
 	if f.net.Open("wg0", address) || f.session(peer.ID).PausedAt == 0 {
 		t.Fatal("another IP doesn't pause the session")
+	}
+}
+
+// The password checks in progress count toward the lockout: attempts sent together get MaxFailures guesses at most.
+func TestLockoutChecking(t *testing.T) {
+	l := newLoginFailures()
+	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	for range MaxFailures - 1 {
+		l.add(1, "198.51.100.1", now)
+	}
+	l.begin(1, "198.51.100.1")
+	if until, locked := l.lockedUntil(1, "198.51.100.1", now); !locked || !until.Equal(now.Add(checkingRetry)) {
+		t.Fatalf("with a check in progress: %v %v", until, locked)
+	}
+	if _, locked := l.lockedUntil(1, "203.0.113.7", now); locked {
+		t.Fatal("another IP waits for the checks of the first one")
+	}
+	l.end(1, "198.51.100.1")
+	if _, locked := l.lockedUntil(1, "198.51.100.1", now); locked {
+		t.Fatal("still waiting after the check ended")
+	}
+	if len(l.checking) != 0 {
+		t.Fatalf("checks left: %+v", l.checking)
+	}
+	// an end without its begin, after a restore, does nothing
+	l.end(2, "198.51.100.1")
+	if len(l.checking) != 0 {
+		t.Fatalf("checks after an end alone: %+v", l.checking)
+	}
+}
+
+func TestLockoutTogether(t *testing.T) {
+	f := setup(t)
+	server := f.server(store.AuthPassword)
+	peer := f.peer(server, f.user("alice"))
+	address := netip.MustParseAddr("10.8.0.2")
+	f.handshake(peer, "198.51.100.1")
+	const attempts = 20
+	statuses := make(chan int, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			statuses <- f.s.Login(address, "10.8.0.1", LoginRequest{Username: "alice", Password: "wrong"}).Status
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	checked := 0
+	for status := range statuses {
+		switch status {
+		case 401:
+			checked++
+		case 429:
+		default:
+			t.Fatalf("status %d", status)
+		}
+	}
+	if checked > MaxFailures {
+		t.Fatalf("%d passwords checked, at most %d", checked, MaxFailures)
+	}
+	f.s.mu.Lock()
+	left := len(f.s.failures.checking)
+	f.s.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("checks left: %d", left)
 	}
 }

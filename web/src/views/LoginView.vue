@@ -7,7 +7,7 @@ import UiButton from '../components/UiButton.vue'
 import UiInput from '../components/UiInput.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { errorMessage } from '../format'
-import { checkSession } from '../state'
+import { checkSession, session } from '../state'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,6 +16,9 @@ const password = ref('')
 const code = ref('')
 // the password is right, the account has an authenticator: the second step asks a code
 const needsCode = ref(false)
+// the days the server can remember this browser, 0 when it's off
+const rememberDays = ref(0)
+const remember = ref(false)
 const error = ref('')
 const busy = ref(false)
 
@@ -25,13 +28,18 @@ async function submit() {
     return
   }
   if (needsCode.value && !/^\d{6}$/.test(code.value.trim())) {
-    error.value = 'Type the 6 digits of your authenticator app.'
+    error.value = 'Enter the 6-digit code from your authenticator app.'
     return
   }
   busy.value = true
   error.value = ''
   try {
-    const result = await api.login(username.value, password.value, needsCode.value ? code.value.trim() : '')
+    const result = await api.login(
+      username.value,
+      password.value,
+      needsCode.value ? code.value.trim() : '',
+      needsCode.value && rememberDays.value > 0 && remember.value,
+    )
     password.value = code.value = ''
     await checkSession(true)
     if (result.setup) {
@@ -43,6 +51,7 @@ async function submit() {
   } catch (e) {
     if (e instanceof ApiError && e.code === 'otp_required') {
       needsCode.value = true
+      rememberDays.value = typeof e.data.remember_days === 'number' ? e.data.remember_days : 0
       await nextTick()
       document.getElementById('login-code')?.querySelector('input')?.focus()
       return
@@ -61,6 +70,7 @@ async function submit() {
 
 function back() {
   needsCode.value = false
+  remember.value = false
   password.value = code.value = error.value = ''
 }
 </script>
@@ -79,7 +89,11 @@ function back() {
         @submit.prevent="submit"
       >
         <UiNotice v-if="route.query.restored && !needsCode" tone="info">
-          The configuration is restored. Log in with an administrator of the backup.
+          The configuration has been restored. Log in with an administrator account from the backup.
+        </UiNotice>
+        <UiNotice v-if="session.error && !error" tone="warning">
+          Couldn't check whether you're logged in: {{ session.error }} You may still be logged in. Reload the page once
+          Authway Server responds.
         </UiNotice>
         <template v-if="!needsCode">
           <UiInput v-model="username" label="Username" autocomplete="username" />
@@ -87,11 +101,24 @@ function back() {
         </template>
         <template v-else>
           <p class="text-sm text-slate-600 dark:text-slate-300">
-            Open the authenticator app of <span class="font-medium">{{ username }}</span> and type its code.
+            Open the authenticator app for <span class="font-medium">{{ username }}</span> and enter the code it shows.
           </p>
           <div id="login-code">
             <UiInput v-model="code" label="Authenticator code" autocomplete="one-time-code" placeholder="123456" mono />
           </div>
+          <label v-if="rememberDays > 0" class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
+            <input
+              v-model="remember"
+              type="checkbox"
+              class="mt-0.5 size-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500 dark:border-slate-600 dark:bg-slate-800"
+            />
+            <span>
+              Remember this device for {{ rememberDays }} {{ rememberDays === 1 ? 'day' : 'days' }}
+              <span class="block text-xs text-slate-500 dark:text-slate-400">
+                You won't need a code to log in from this browser. Don't use this on a shared computer.
+              </span>
+            </span>
+          </label>
         </template>
         <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
         <UiButton type="submit" variant="primary" :loading="busy" class="w-full">{{ needsCode ? 'Verify' : 'Log in' }}</UiButton>
