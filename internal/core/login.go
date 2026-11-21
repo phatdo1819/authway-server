@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phatdo1819/authway-server/internal/directory"
 	"github.com/phatdo1819/authway-server/internal/secret"
 	"github.com/phatdo1819/authway-server/internal/store"
 	"github.com/phatdo1819/authway-server/internal/totp"
@@ -181,7 +183,8 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 	s.freshStatsLocked()
 	endpoint := endpointIP(peerStatsOf(s.stats, peer))
 	now := s.now()
-	if until, locked := s.failures.lockedUntil(peer.ID, endpoint, now); locked {
+	limit := peerFailureLimit(user)
+	if until, locked := s.failures.lockedUntil(peer.ID, endpoint, now, limit); locked {
 		s.mu.Unlock()
 		retry := int(until.Sub(now).Seconds())
 		if retry < 1 {
@@ -199,7 +202,7 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 			enrolling = device
 		case "device_mismatch":
 			s.reportMismatchLocked(server, peer, endpoint, now, "login from another device")
-			s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now)
+			s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now, limit)
 			s.mu.Unlock()
 			return fail(401, code)
 		case "challenge_expired":
@@ -215,22 +218,38 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 		}
 	}
 	serverID, peerID, hash, generation := server.ID, peer.ID, user.PasswordHash, s.generation
+	var directorySettings DirectorySettings
+	if user.FromDirectory() {
+		directorySettings = s.directorySettingsLocked()
+	}
 	// counted as a failure until it ends: attempts sent together all see it
 	failures := s.failures
 	failures.begin(peerID, endpoint)
 	s.mu.Unlock()
 
-	// the password check takes a while, out of the lock; the username is the one of the user of the peer
+	// the password check takes a while, out of the lock; the username is the one of the user of the peer. A user of
+	// Active Directory has its password checked there
 	valid := false
-	if strings.EqualFold(strings.TrimSpace(request.Username), user.Username) && !user.Disabled &&
-		request.Password != "" && len(request.Password) <= MaxPassword {
-		valid = secret.VerifyPassword(request.Password, hash)
-	} else {
+	var directoryErr error
+	if sameUser(request.Username, user) && !user.Disabled && request.Password != "" && len(request.Password) <= MaxPassword {
+		if user.FromDirectory() {
+			directoryErr = s.checkDirectoryPassword(directorySettings, user.DirectoryID, request.Password)
+			valid = directoryErr == nil
+		} else {
+			valid = secret.VerifyPassword(request.Password, hash)
+		}
+	} else if !user.FromDirectory() {
 		secret.SpendCheck(request.Password)
 	}
 	var counter uint64
 	if valid && withOTP {
 		counter, valid = totp.Verify(user.TOTPSecret, request.OTP, now)
+	}
+	// Active Directory says the password is right, and has to be changed. The user is told so, once the code is right
+	// too: to someone without the authenticator, the answer gives nothing away
+	expired := errors.Is(directoryErr, directory.ErrPasswordExpired)
+	if expired && withOTP {
+		_, expired = totp.Verify(user.TOTPSecret, request.OTP, now)
 	}
 
 	s.mu.Lock()
@@ -248,10 +267,17 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 	if peer.Blocked {
 		return fail(403, "blocked")
 	}
+	if directoryErr != nil && !refusedByDirectory(directoryErr) {
+		// the directory didn't answer, or is turned off: not a wrong password, nothing counts
+		s.log.Error("can't check a password with Active Directory", "user", user.Username, "server", server.Name,
+			"peer", peer.Name, "error", directoryErr)
+		return fail(503, "unavailable")
+	}
 	current, err := s.db.Q().User(peer.UserID)
 	// a new key during the check: the code was of the old one
-	if err != nil || current.ID != user.ID || current.PasswordHash != hash || current.Disabled ||
-		(withOTP && current.TOTPSecret != user.TOTPSecret) {
+	unchanged := err == nil && current.ID == user.ID && current.PasswordHash == hash && current.DirectoryID == user.DirectoryID &&
+		!current.Disabled && (!withOTP || current.TOTPSecret == user.TOTPSecret)
+	if !unchanged {
 		valid = false
 	}
 	if valid && withOTP && s.codeUsedLocked(user.ID, counter, now) {
@@ -259,16 +285,19 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 	}
 	if !valid {
 		// the user of the peer, never what was typed: it can be a password, and the events are read by every role
-		detail := ""
-		if !strings.EqualFold(strings.TrimSpace(request.Username), user.Username) {
+		detail := directoryReason(directoryErr)
+		if !sameUser(request.Username, user) {
 			detail = "another username"
 		}
-		s.loginFailedLocked(server, peer, user.Username, address, endpoint, detail, now)
+		s.loginFailedLocked(server, peer, user.Username, address, endpoint, detail, now, limit)
+		if expired && unchanged {
+			return fail(401, "password_expired")
+		}
 		return fail(401, "invalid_credentials")
 	}
 	if binding && !s.recordDeviceLoginLocked(server, peer, user.Username, enrolling, request.Device, endpoint, now) {
 		// another device enrolled meanwhile, the window closed, or an administrator revoked the device
-		s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now)
+		s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now, limit)
 		return fail(401, "device_mismatch")
 	}
 	s.failures.success(peer.ID, endpoint)
@@ -344,14 +373,15 @@ func (s *Service) Logout(address netip.Addr, host string) Answer {
 	return Answer{Status: 200, Body: map[string]any{"result": "success"}}
 }
 
-// loginFailedLocked counts a failed login of a peer from its public IP, and locks the IP out after too many.
+// loginFailedLocked counts a failed login of a peer from its public IP, and locks the IP out after too many; limit is
+// peerFailureLimit of its user.
 func (s *Service) loginFailedLocked(server *store.Server, peer *store.Peer, username string, address netip.Addr,
-	endpoint, detail string, now time.Time) {
+	endpoint, detail string, now time.Time, limit int) {
 	s.log.Warn("login failed", "user", username, "server", server.Name, "peer", peer.Name, "address", address,
 		"from", endpoint, "detail", detail)
 	s.eventLocked(store.Event{Kind: "login_failed", ServerName: server.Name, PeerName: peer.Name, Username: username,
 		Source: endpoint, Detail: detail})
-	if locked := s.failures.add(peer.ID, endpoint, now); locked != nil {
+	if locked := s.failures.add(peer.ID, endpoint, now, limit); locked != nil {
 		s.lockoutLocked(server, peer, locked)
 	}
 }

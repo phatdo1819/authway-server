@@ -157,7 +157,8 @@ func (s *Service) Import(by Actor, input ImportInput) (*ImportResult, error) {
 		}
 		key := strings.ToLower(row.Username)
 		if _, ok := hashes[key]; !ok {
-			// skipped at the first check, deleted since: added now
+			// skipped at the first check, deleted since: added now. With mu held, so not in the turn of the hashes
+			// of the web UI (see hashShared): rare, and one hash at most for each row
 			hash, err := secret.HashPassword(passwordOf(index, row))
 			if err != nil {
 				return nil, err
@@ -366,9 +367,7 @@ func (s *Service) planImportLocked(lines []importLine, skipExisting bool) (*impo
 func hashAll(passwords map[string]string) (map[string]string, error) {
 	hashes := make(map[string]string, len(passwords))
 	for key, password := range passwords {
-		var hash string
-		var err error
-		secret.Shared(nil, func() { hash, err = secret.HashPassword(password) })
+		hash, err := hashShared(password)
 		if err != nil {
 			return nil, err
 		}

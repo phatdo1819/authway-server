@@ -38,10 +38,10 @@
 - **The log of the container** keeps 3 files of 10 MB at most (`logging` in compose.yaml). The latest lines are also
   on the **System** page, in its **Log** tab.
 - **The version** is at the bottom of the menu and on the System page: the one of the source, or what you give at
-  the build to tell builds apart: `AUTHWAY_VERSION=0.2.0+$(git rev-parse --short HEAD) docker compose build`.
+  the build to tell builds apart: `AUTHWAY_VERSION=0.3.0+$(git rev-parse --short HEAD) docker compose build`.
 - **A published image**: `.github/workflows/image.yml` builds the image for amd64 and arm64 and publishes it on the
   GitHub Container Registry of the repository at each tag `v<version>` (the version of `cmd/authway-server/main.go`).
-  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.2.0`.
+  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.3.0`.
 - **The certificate of the web UI**: the self-signed one is valid 2 years and made again 30 days before its end (the
   browsers then warn once more). Your own `data/tls/cert.pem` and `data/tls/key.pem` are loaded within a minute,
   without a restart; a pair that doesn't load leaves the one before in use. Yours is never replaced: the System page
@@ -64,7 +64,7 @@
   the connections, the events and the alerts aren't in the backup, nor the certificate of the web UI. On a new host, log in with the first password
   printed in the log, choose a new one, then restore: the peers connect again with their configuration files, as
   long as the host has the same public address and ports.
-- **The history** (logins, connections, events, alerts) stays 90 days by default: **Settings > History**, from 1 day
+- **The history** (logins, connections, events, alerts) stays 90 days by default: **Settings > General > History**, from 1 day
   to 10 years. Fewer days delete the older rows within seconds.
 
 ## Administrators
@@ -101,7 +101,7 @@
   second tunnel in the app: remove the old one.
 
 - **Device binding needs Authway**, on Windows or macOS, and 0.2.0 or later for the WireGuard key of the device: the
-  browser and the WireGuard apps can't sign the login. The first computer that logs in for a peer is enrolled, during 72 hours by default (**Settings >
+  browser and the WireGuard apps can't sign the login. The first computer that logs in for a peer is enrolled, during 72 hours by default (**Settings > Logins >
   Device binding**). After a reinstall or for a new computer, choose **Replace the device** in the menu of the
   peer: the next computer that logs in is enrolled. **Revoke the device** leaves the peer without one until you
   allow a new one. Turning binding on logs out the peers of the server: they log in again from their computer.

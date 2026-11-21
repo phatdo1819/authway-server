@@ -8,7 +8,7 @@ Once Authway Server is [installed](install.md):
    first administrator and the password that the install script printed (the log has them, after an install by
    hand). The web UI asks for a new password first.
 2. **Secure the administration**: **your account**, your name at the bottom of the menu, sets up your authenticator
-   app. In **Settings**, check the password policy, and require an authenticator of every administrator if you want.
+   app. In **Settings > Logins**, check the password policy, and require an authenticator of every administrator if you want.
    **Administrators** adds the other administrators, each with its role.
 3. **Add the users**, in **Users**, each with a password. For the servers that ask for a code, set up their
    authenticator (**Set up**, under Authenticator): the user scans the QR code with their app, and you can type a code

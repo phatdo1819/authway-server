@@ -226,6 +226,8 @@ export interface User {
   // when a code of the authenticator first worked, at a login or checked by an administrator: 0 while nobody has
   // shown that the key was scanned
   totp_confirmed_at: number
+  // synced from Active Directory: the username, full name and state come from there, and so does the password
+  directory: boolean
   peers: string[]
   sessions: number
   created_at: number
@@ -408,6 +410,19 @@ export interface Status {
   version: string
   // the routes to change on the routers: the address of the Docker host changed
   host_changes: HostAddressChange[]
+  // what's wrong with Active Directory, null when nothing
+  directory: DirectoryAlert | null
+}
+
+// the warning about Active Directory at the top of the pages
+export interface DirectoryAlert {
+  // the error of the syncs that fail in a row, since then
+  error?: string
+  failing_since?: number
+  // the users a sync didn't disable, waiting for an Administrator
+  held?: number
+  // when the service account's password expires: soon, or already
+  password_expires?: number
 }
 
 export interface HostAddressChange {
@@ -510,6 +525,66 @@ export interface ImportResult {
   imported: boolean
   // the passwords made for the users without one in the file: shown this once
   passwords?: { username: string; password: string }[]
+}
+
+// Active Directory: the members of a group are synced as users, and their passwords are checked there
+export type DirectorySecurity = 'ldaps' | 'starttls'
+export type DirectoryUsername = 'sAMAccountName' | 'userPrincipalName'
+
+export interface DirectorySettings {
+  enabled: boolean
+  // the domain controllers, host or host:port, tried in order
+  servers: string[]
+  security: DirectorySecurity
+  // PEM, for domain controllers whose certificate isn't trusted by the system
+  ca_certificates: string
+  bind_user: string
+  // only sent: empty keeps the password saved
+  bind_password?: string
+  base_dn: string
+  group: string
+  username_attribute: DirectoryUsername
+  sync_minutes: number
+  link_local_users: boolean
+}
+
+// a member of the group left out by the sync, and why
+export interface DirectorySkip {
+  username: string
+  reason: 'invalid_username' | 'local_user' | 'other_account' | 'taken'
+}
+
+export interface DirectoryStatus {
+  // when the latest sync ended, 0 before the first
+  at: number
+  error: string
+  members: number
+  added: number
+  updated: number
+  disabled: number
+  skipped: DirectorySkip[]
+  // the usernames a sync would have disabled, too many at once: none was, until an Administrator confirms
+  held: string[]
+  // when the service account's password expires, 0 when it never does or Active Directory doesn't tell
+  password_expires: number
+  // the domain controllers that didn't answer before the one that did, and why
+  unanswered: string[]
+  // the syncs that failed in a row, since when
+  failures: number
+  failing_since: number
+}
+
+export interface DirectoryView extends DirectorySettings {
+  bind_password_set: boolean
+  status: DirectoryStatus
+}
+
+// what a test of the settings found
+export interface DirectoryTest {
+  error: string
+  members: number
+  disabled: number
+  sample: string[]
 }
 
 // what a backup has, before a restore
@@ -641,6 +716,12 @@ export const api = {
     const match = /filename="?([^";]+)"?/.exec(disposition)
     return { name: match?.[1] ?? 'authway-backup.json', text: await response.text() }
   },
+  // Active Directory; a test uses the values of the form, saved or not, and changes nothing
+  directory: () => json<DirectoryView>('GET', '/directory'),
+  saveDirectory: (settings: DirectorySettings) => json<DirectoryView>('PUT', '/directory', settings),
+  testDirectory: (settings: DirectorySettings) => json<DirectoryTest>('POST', '/directory/test', settings),
+  // disable: how many held users an Administrator agreed to disable
+  syncDirectory: (disable = 0) => json<DirectoryStatus>('POST', '/directory/sync', disable ? { disable } : {}),
   checkBackup: (passphrase: string, backup: string) => json<BackupSummary>('POST', '/restore/check', { passphrase, backup }),
   restore: (password: string, passphrase: string, backup: string) =>
     json<BackupSummary>('POST', '/restore', { password, passphrase, backup }),

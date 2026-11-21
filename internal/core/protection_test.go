@@ -411,17 +411,17 @@ func TestLockoutChecking(t *testing.T) {
 	l := newLoginFailures()
 	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
 	for range MaxFailures - 1 {
-		l.add(1, "198.51.100.1", now)
+		l.add(1, "198.51.100.1", now, MaxFailures*PeerFailureFactor)
 	}
 	l.begin(1, "198.51.100.1")
-	if until, locked := l.lockedUntil(1, "198.51.100.1", now); !locked || !until.Equal(now.Add(checkingRetry)) {
+	if until, locked := l.lockedUntil(1, "198.51.100.1", now, MaxFailures*PeerFailureFactor); !locked || !until.Equal(now.Add(checkingRetry)) {
 		t.Fatalf("with a check in progress: %v %v", until, locked)
 	}
-	if _, locked := l.lockedUntil(1, "203.0.113.7", now); locked {
+	if _, locked := l.lockedUntil(1, "203.0.113.7", now, MaxFailures*PeerFailureFactor); locked {
 		t.Fatal("another IP waits for the checks of the first one")
 	}
 	l.end(1, "198.51.100.1")
-	if _, locked := l.lockedUntil(1, "198.51.100.1", now); locked {
+	if _, locked := l.lockedUntil(1, "198.51.100.1", now, MaxFailures*PeerFailureFactor); locked {
 		t.Fatal("still waiting after the check ended")
 	}
 	if len(l.checking) != 0 {

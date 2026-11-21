@@ -6,7 +6,7 @@ import { api, type Status } from '../api'
 import AppIcon, { type IconName } from '../components/AppIcon.vue'
 import UiButton from '../components/UiButton.vue'
 import UiNotice from '../components/UiNotice.vue'
-import { dateTime, errorMessage, roleLabel } from '../format'
+import { dateTime, day, errorMessage, roleLabel, sentence } from '../format'
 import { isAdmin, notify, session } from '../state'
 
 const router = useRouter()
@@ -49,6 +49,9 @@ async function refreshStatus() {
 }
 // the pages call it after a change, so the warning of the top follows
 provide('refreshStatus', refreshStatus)
+
+// the password of the service account of Active Directory: expired, or about to
+const passwordExpired = computed(() => (status.value?.directory?.password_expires ?? Infinity) * 1000 <= Date.now())
 
 // the address of the Docker host changed: an Administrator says the router has the new routes
 const confirming = ref(false)
@@ -195,6 +198,36 @@ async function logout() {
           <UiButton size="sm" icon="check" :loading="confirming" @click="confirmRoutes">I've updated the router</UiButton>
         </div>
         <p v-else class="mt-1.5">An Administrator clears this warning once the router has the new routes.</p>
+      </UiNotice>
+      <UiNotice
+        v-if="status?.directory"
+        :tone="status.directory.error || passwordExpired ? 'error' : 'warning'"
+        title="Active Directory needs attention"
+        class="mb-6"
+      >
+        <p v-if="status.directory.error" class="break-words whitespace-pre-line">
+          The sync has failed since {{ dateTime(status.directory.failing_since ?? 0) }}. {{ sentence(status.directory.error) }}.
+        </p>
+        <p v-if="status.directory.held" :class="{ 'mt-1.5': status.directory.error }">
+          A sync would disable {{ status.directory.held }} users at once, so it disabled no one. Check that they really
+          left the group before you confirm it.
+        </p>
+        <p v-if="status.directory.password_expires" :class="{ 'mt-1.5': status.directory.error || status.directory.held }">
+          The service account's password {{ passwordExpired ? 'expired' : 'expires' }} on
+          {{ day(status.directory.password_expires) }}.
+          <template v-if="!passwordExpired">Users from Active Directory can't log in after that.</template>
+          Set a new one in Active Directory, then in Settings.
+        </p>
+        <p class="mt-1.5">
+          <RouterLink
+            v-if="isAdmin()"
+            :to="{ name: 'settings', query: { tab: 'directory' } }"
+            class="font-medium underline underline-offset-2"
+          >
+            Open Settings › Active Directory
+          </RouterLink>
+          <template v-else>An Administrator can fix this in Settings.</template>
+        </p>
       </UiNotice>
       <RouterView />
     </main>

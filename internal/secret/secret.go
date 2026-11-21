@@ -26,8 +26,9 @@ const (
 // at most two checks at once: each one takes 64 MiB
 var slots = make(chan struct{}, 2)
 
-// the hashes that aren't logins of the VPN, the logins of the web UI and the imports, take turns at one of the two
-// slots: however many there are, the other slot stays for the VPN
+// the hashes that aren't logins of the VPN take turns at one of the two slots: the logins and the password checks of
+// the web UI, the passwords it gives, the imports, the keys of the backups. However many there are, the other slot
+// stays for the VPN
 var shared = make(chan struct{}, 1)
 
 // Shared runs fn once the turn of the hashes that aren't logins of the VPN comes, or returns false without running it

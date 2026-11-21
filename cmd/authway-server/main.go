@@ -24,6 +24,7 @@ import (
 
 	"github.com/phatdo1819/authway-server/internal/admin"
 	"github.com/phatdo1819/authway-server/internal/core"
+	"github.com/phatdo1819/authway-server/internal/directory"
 	"github.com/phatdo1819/authway-server/internal/hostroute"
 	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/portal"
@@ -32,8 +33,8 @@ import (
 	"github.com/phatdo1819/authway-server/internal/system"
 )
 
-// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.2.0+abc1234"
-var version = "0.2.0"
+// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.3.0+abc1234"
+var version = "0.3.0"
 
 type config struct {
 	data          string
@@ -345,7 +346,7 @@ func run(args []string) int {
 	}
 	service, err := core.New(db, net, core.Options{
 		LoginPort: c.loginPort, RedirectPort: c.redirectPort, DNSPort: c.dnsPort, PublicHost: c.publicHost,
-		Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes,
+		Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes, Directory: directory.LDAP{},
 	})
 	if err != nil {
 		log.Error("can't start", "error", err)

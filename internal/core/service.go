@@ -16,6 +16,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/phatdo1819/authway-server/internal/directory"
 	"github.com/phatdo1819/authway-server/internal/hostroute"
 	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/store"
@@ -145,7 +146,9 @@ type Options struct {
 	System *system.Monitor
 	// the folder shared with the helper of the Docker host, for the routed servers on a Docker bridge: "", no helper
 	HostRoutes string
-	Now        func() time.Time
+	// reads Active Directory, for its users: nil, no directory
+	Directory directory.Client
+	Now       func() time.Time
 	// After runs f once d has passed, time.AfterFunc by default: the tests run it at once
 	After func(d time.Duration, f func())
 }
@@ -197,6 +200,12 @@ type Service struct {
 	// by the System page, so hostMu guards them too. Nil until read from the database
 	hostMu        sync.Mutex
 	hostAddresses map[string]hostAddress
+	// Active Directory: one sync at a time (directoryMu, taken before mu), the latest one and when it started (with
+	// mu), and a request to look at once whether one is due
+	directoryMu     sync.Mutex
+	directoryStatus DirectoryStatus
+	directorySynced time.Time
+	directoryWake   chan struct{}
 }
 
 // New ends the sessions that can't go on and applies the configuration.
@@ -236,6 +245,7 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 		mismatches:     map[int64]time.Time{},
 		after:          opts.After,
 		counters:       map[int64]peerCounters{},
+		directoryWake:  make(chan struct{}, 1),
 	}
 	if opts.HostRoutes != "" {
 		s.hostReader = hostroute.NewReader(opts.HostRoutes)

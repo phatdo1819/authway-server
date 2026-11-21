@@ -543,3 +543,51 @@ func TestParseRoutes(t *testing.T) {
 		t.Errorf("the loopback: %q", got)
 	}
 }
+
+// The checks of Active Directory: the sync, the domain controllers that don't answer, the service account's password.
+func TestDirectoryChecks(t *testing.T) {
+	m, probe, c := newFake()
+	m.Sample()
+	yes := true
+	probe.details = Details{ClockSynced: &yes, IPForward: &yes}
+	snapshot := func(d DirectoryState) []Check {
+		return m.Snapshot(State{StatsAt: c.now, Directory: &d}).Checks
+	}
+	synced := DirectoryState{At: c.now.Add(-time.Minute), Members: 12}
+	if check := checkOf(t, snapshot(synced), "directory"); check.Status != CheckOK || check.Detail != "The group has 12 members. Last synced 1 min ago." {
+		t.Errorf("synced: %+v", check)
+	}
+	for _, check := range snapshot(synced) {
+		if check.ID == "directory_servers" || check.ID == "directory_password" {
+			t.Errorf("without anything to say: %+v", check)
+		}
+	}
+	held := synced
+	held.Held = 7
+	if check := checkOf(t, snapshot(held), "directory"); check.Status != CheckWarning || check.Title != "An Active Directory sync is waiting for you" ||
+		!strings.Contains(check.Detail, "It would disable 7 users at once") {
+		t.Errorf("held: %+v", check)
+	}
+	unanswered := synced
+	unanswered.Unanswered = []string{"dc1.example.com:636: i/o timeout"}
+	if check := checkOf(t, snapshot(unanswered), "directory_servers"); check.Status != CheckWarning ||
+		check.Detail != "At the latest sync: dc1.example.com:636: i/o timeout. The next one in the list answered instead." {
+		t.Errorf("unanswered: %+v", check)
+	}
+	for _, test := range []struct {
+		in     time.Duration
+		status string
+		detail string
+	}{
+		{60 * 24 * time.Hour, CheckOK, "Until "},
+		{10*24*time.Hour + time.Hour, CheckWarning, ", in 10 days."},
+		{2 * time.Hour, CheckWarning, ", in less than a day."},
+		{-time.Hour, CheckError, "It expired on "},
+	} {
+		state := synced
+		state.PasswordExpires = c.now.Add(test.in)
+		if check := checkOf(t, snapshot(state), "directory_password"); check.Status != test.status || !strings.Contains(check.Detail, test.detail) {
+			t.Errorf("expires in %s: %+v", test.in, check)
+		}
+	}
+}

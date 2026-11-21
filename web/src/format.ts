@@ -83,6 +83,16 @@ export function dateTime(unix: number): string {
   return new Date(unix * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+// a day, without the time
+export function day(unix: number): string {
+  return unix ? new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '—'
+}
+
+// an error of the server as a sentence: it starts with a lowercase letter
+export function sentence(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text
+}
+
 export function ago(unix: number): string {
   if (!unix) {
     return 'never'
@@ -190,6 +200,10 @@ const eventKinds: Record<string, string> = {
   device_mismatch: 'Login from a different device',
   device_key: 'Device created its key',
   host_address_changed: 'Docker host address changed',
+  directory_failed: 'Active Directory sync failed',
+  directory_restored: 'Active Directory sync works again',
+  directory_held: 'Active Directory sync held users',
+  directory_confirmed: 'Held users disabled',
   // the changes made in the web UI
   server_added: 'Server added',
   server_changed: 'Server changed',
@@ -213,6 +227,10 @@ const eventKinds: Record<string, string> = {
 
 // the events of the web UI: the logins of the administrators and the changes (webKinds in internal/core/audit.go)
 const webKinds = new Set([
+  'directory_failed',
+  'directory_restored',
+  'directory_held',
+  'directory_confirmed',
   'admin_login',
   'admin_login_failed',
   'admin_added',
@@ -251,7 +269,12 @@ export function eventTone(kind: string): 'red' | 'amber' | 'green' | 'gray' | 's
     case 'copy_suspected':
     case 'admin_login_failed':
     case 'device_mismatch':
+    case 'directory_failed':
       return 'red'
+    case 'directory_held':
+      return 'amber'
+    case 'directory_restored':
+      return 'green'
     case 'server_deleted':
     case 'peer_deleted':
     case 'user_deleted':
@@ -396,6 +419,7 @@ const messages: Record<string, string> = {
   server_not_found: 'One of these servers no longer exists. Reload the page.',
   duplicate_server: 'A server is listed twice.',
   device_binding_not_required: "This server doesn't require enrolled devices.",
+  directory: 'This comes from Active Directory. Change it there.',
   // the rows of an import
   twice: 'This username already appears in an earlier row.',
   extra_cells: 'This row has more cells than the header has columns.',
@@ -439,6 +463,8 @@ export function errorMessage(error: unknown): string {
       return 'Settings require every administrator to use an authenticator. You can replace it, but not remove it.'
     case 'setup_expired':
       return 'Setup took longer than 10 minutes. Start again.'
+    case 'directory_off':
+      return 'Turn on Active Directory sync and save first.'
     default:
       return 'Something went wrong. Try again.'
   }

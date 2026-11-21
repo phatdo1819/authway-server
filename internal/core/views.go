@@ -152,11 +152,14 @@ type UserView struct {
 	Disabled bool   `json:"disabled"`
 	TOTP     bool   `json:"totp"`
 	// when a code of the authenticator first worked, 0 while nobody has shown that the key was scanned
-	TOTPConfirmedAt int64    `json:"totp_confirmed_at"`
-	Peers           []string `json:"peers"`
-	Sessions        int      `json:"sessions"`
-	CreatedAt       int64    `json:"created_at"`
-	UpdatedAt       int64    `json:"updated_at"`
+	TOTPConfirmedAt int64 `json:"totp_confirmed_at"`
+	// synced from Active Directory: its username, full name and state come from there, and its password is checked
+	// there
+	Directory bool     `json:"directory"`
+	Peers     []string `json:"peers"`
+	Sessions  int      `json:"sessions"`
+	CreatedAt int64    `json:"created_at"`
+	UpdatedAt int64    `json:"updated_at"`
 	// Version counts the changes made by the administrators: a form sends the one it opened with, and a change
 	// made since refuses the save. UpdatedBy made the latest one
 	Version   int64  `json:"version"`
@@ -195,6 +198,8 @@ type Status struct {
 	Version string `json:"version"`
 	// the routes to change on the routers: the address of the Docker host changed
 	HostChanges []HostAddressChange `json:"host_changes"`
+	// what's wrong with Active Directory; nil when nothing
+	Directory *DirectoryAlert `json:"directory"`
 }
 
 func sessionView(session store.Session) *SessionView {
@@ -355,9 +360,15 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 	if err != nil {
 		return nil, err
 	}
-	latest, err := q.LatestConnections()
-	if err != nil {
-		return nil, err
+	// the history is read only for the peers WireGuard has no handshake of: it's the whole table
+	var latest map[int64]store.Connection
+	for index := range peers {
+		if peerStatsOf(s.stats, &peers[index]).LastHandshake.IsZero() {
+			if latest, err = q.LatestConnections(); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	now := s.now()
 	views := make([]PeerView, 0, len(peers))
@@ -444,7 +455,7 @@ func (s *Service) userViewsLocked(users []store.User) ([]UserView, error) {
 	for _, user := range users {
 		view := UserView{
 			ID: user.ID, Username: user.Username, FullName: user.FullName, Disabled: user.Disabled,
-			TOTP: user.TOTPSecret != "", TOTPConfirmedAt: user.TOTPConfirmedAt, Peers: []string{},
+			TOTP: user.TOTPSecret != "", TOTPConfirmedAt: user.TOTPConfirmedAt, Directory: user.FromDirectory(), Peers: []string{},
 			CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
 			Version: user.Version, UpdatedBy: user.UpdatedBy,
 		}
@@ -629,7 +640,7 @@ func (s *Service) Status() (Status, error) {
 	defer s.mu.Unlock()
 	q := s.db.Q()
 	status := Status{ApplyError: s.applyError, LoginPort: s.opts.LoginPort, Version: s.opts.Version,
-		HostChanges: s.hostChangesLocked()}
+		HostChanges: s.hostChangesLocked(), Directory: s.directoryAlertLocked()}
 	servers, err := q.Servers()
 	if err != nil {
 		return status, err

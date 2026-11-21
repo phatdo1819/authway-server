@@ -274,15 +274,15 @@ func TestIPv6Networks(t *testing.T) {
 	now := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
 	var locked []string
 	for index := 1; index <= MaxFailures; index++ {
-		locked = l.add(1, fmt.Sprintf("2001:db8:1:2::%x", index), now)
+		locked = l.add(1, fmt.Sprintf("2001:db8:1:2::%x", index), now, MaxFailures*PeerFailureFactor)
 	}
 	if strings.Join(locked, ",") != "2001:db8:1:2::/64" {
 		t.Errorf("locked out: %v", locked)
 	}
-	if _, out := l.lockedUntil(1, "2001:db8:1:2:ffff::1", now); !out {
+	if _, out := l.lockedUntil(1, "2001:db8:1:2:ffff::1", now, MaxFailures*PeerFailureFactor); !out {
 		t.Error("another address of the /64 isn't locked out")
 	}
-	if _, out := l.lockedUntil(1, "2001:db8:1:3::1", now); out {
+	if _, out := l.lockedUntil(1, "2001:db8:1:3::1", now, MaxFailures*PeerFailureFactor); out {
 		t.Error("another /64 is locked out")
 	}
 

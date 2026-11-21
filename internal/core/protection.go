@@ -55,8 +55,9 @@ func (l *loginFailures) recent(peer int64, now time.Time) []failure {
 }
 
 // lockedUntil tells whether a peer can try to log in from an IP, and until when it can't. The IPs count by
-// clientKey: an IPv6 address by its /64, so the many addresses of one network don't multiply the attempts.
-func (l *loginFailures) lockedUntil(peer int64, ip string, now time.Time) (time.Time, bool) {
+// clientKey: an IPv6 address by its /64, so the many addresses of one network don't multiply the attempts. peerLimit
+// is the failures of the peer from all the IPs but the one of its latest login that lock it out (peerFailureLimit).
+func (l *loginFailures) lockedUntil(peer int64, ip string, now time.Time, peerLimit int) (time.Time, bool) {
 	ip = clientKey(ip)
 	recent := l.recent(peer, now)
 	var own []failure
@@ -73,9 +74,9 @@ func (l *loginFailures) lockedUntil(peer int64, ip string, now time.Time) (time.
 	switch {
 	case len(own) >= MaxFailures:
 		until = own[len(own)-1].at.Add(LockoutTime)
-	case ip != l.trusted[peer] && len(recent) >= MaxFailures*PeerFailureFactor:
+	case ip != l.trusted[peer] && len(recent) >= peerLimit:
 		until = recent[len(recent)-1].at.Add(LockoutTime)
-	case len(own)+checking >= MaxFailures, ip != l.trusted[peer] && len(recent)+checkingAll >= MaxFailures*PeerFailureFactor:
+	case len(own)+checking >= MaxFailures, ip != l.trusted[peer] && len(recent)+checkingAll >= peerLimit:
 		until = now.Add(checkingRetry)
 	default:
 		return time.Time{}, false
@@ -104,8 +105,9 @@ func (l *loginFailures) end(peer int64, ip string) {
 	l.checking[peer][ip]--
 }
 
-// add counts a failure and returns the IPs it locks out, none when it locks out nothing new.
-func (l *loginFailures) add(peer int64, ip string, now time.Time) []string {
+// add counts a failure and returns the IPs it locks out, none when it locks out nothing new. peerLimit is the one of
+// lockedUntil.
+func (l *loginFailures) add(peer int64, ip string, now time.Time, peerLimit int) []string {
 	ip = clientKey(ip)
 	recent := append(l.recent(peer, now), failure{at: now, ip: ip})
 	l.byPeer[peer] = recent
@@ -120,7 +122,7 @@ func (l *loginFailures) add(peer int64, ip string, now time.Time) []string {
 	if own == MaxFailures {
 		return []string{ip}
 	}
-	if len(recent) == MaxFailures*PeerFailureFactor {
+	if len(recent) == peerLimit {
 		return sortedKeys(ips)
 	}
 	return nil

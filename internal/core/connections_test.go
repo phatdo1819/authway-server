@@ -247,3 +247,31 @@ func TestConnectionsReusedID(t *testing.T) {
 		t.Fatalf("connections %+v", list)
 	}
 }
+
+// The peers of a deleted user go with it: as for a deleted peer, a new peer that gets the id of one of them starts a
+// connection of its own, before the next pass of the history too.
+func TestConnectionsReusedIDAfterUser(t *testing.T) {
+	f := setup(t)
+	server := f.server(store.AuthKey)
+	old := f.peer(server, f.user("alice"))
+	connect := func(peer *PeerView) {
+		f.net.SetPeer(keyOf(peer.PublicKey), network.PeerStats{Interface: "wg0", Endpoint: netip.MustParseAddrPort("203.0.113.5:40000"),
+			LastHandshake: f.clock.now, Received: 100, Sent: 100})
+		f.clock.advance(RecordInterval)
+		f.s.Tick()
+	}
+	connect(old)
+	if err := f.s.DeleteUser(testActor, old.UserID); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.net.Peers, keyOf(old.PublicKey))
+	reused, _ := f.s.CreatePeer(testActor, server.ID, PeerInput{Name: "new", Enabled: true})
+	if reused.ID != old.ID || reused.Address != old.Address {
+		t.Skipf("the id or the address isn't reused: %d %s", reused.ID, reused.Address)
+	}
+	connect(reused)
+	list, _ := f.s.Connections(10)
+	if len(list) != 2 || list[0].PeerName != "new" || !list[0].Connected || list[1].PeerName != old.Name || list[1].Connected {
+		t.Fatalf("connections %+v", list)
+	}
+}

@@ -102,7 +102,8 @@ async function setupTotp(user: User) {
 
 function menu(user: User): MenuItem[] {
   const items: MenuItem[] = [
-    { label: 'Edit', icon: 'edit', action: () => edit(user) },
+    // a user of Active Directory changes there: the drawer only shows it
+    { label: user.directory ? 'View' : 'Edit', icon: 'edit', action: () => edit(user) },
     { label: totpAction[totpState(user)], icon: 'shield', action: () => setupTotp(user) },
   ]
   if (user.totp) {
@@ -135,7 +136,10 @@ function menu(user: User): MenuItem[] {
       const peers = user.peers.length
         ? `\n\nTheir peers will also be deleted, and those configuration files will stop working:\n${user.peers.join('\n')}`
         : ''
-      const ok = await confirm(`Delete ${user.username}?`, `This can't be undone.${peers}`, 'Delete user')
+      const directory = user.directory
+        ? '\n\nIf they are still in the Active Directory group, the next sync adds them back, without peers.'
+        : ''
+      const ok = await confirm(`Delete ${user.username}?`, `This can't be undone.${peers}${directory}`, 'Delete user')
       if (ok) {
         try {
           await api.deleteUser(user.id)
@@ -202,6 +206,7 @@ function menu(user: User): MenuItem[] {
             <td class="px-4 py-3">
               <p class="font-medium">{{ user.username }}</p>
               <p v-if="user.full_name" class="text-slate-500 dark:text-slate-400">{{ user.full_name }}</p>
+              <p v-if="user.directory" class="text-xs text-slate-500 dark:text-slate-400">From Active Directory</p>
             </td>
             <td class="px-4 py-3">
               <div class="flex flex-col items-start gap-1">

@@ -18,6 +18,9 @@
 - `internal/portal`: the login page and its API, on the port 8181 of the address of each server.
 - `internal/admin`: the web UI and its API, on the port 8443.
 - `internal/backup`: the file of a backup, sealed with a passphrase.
+- `internal/directory`: reads Active Directory over LDAP (go-ldap): the members of a group, and one user's password.
+  `third_party/asn1-ber` is asn1-ber v1.5.8, which go-ldap needs, with `io.ReadAll` instead of `ioutil.ReadAll`, since
+  Go 1.27 has no `io/ioutil`; `go.mod` replaces the module with it until a release builds.
 - `internal/system`: the System page: the resources of the host and their history, the checks, the latest lines of
   the log.
 
@@ -210,6 +213,7 @@ address of the server as host: a page of another site whose name resolves to it 
   expires?, device?}`; a paused session isn't `authenticated`; `device` only with
   [device binding](#device-binding)
 - `POST /api/login` `{username, password, otp, device?}` → `{result, user, expires}`, or `401 invalid_credentials`,
+  `401 password_expired` (a user of [Active Directory](#active-directory)), `503 unavailable`,
   `403 no_user | no_otp | blocked | forbidden`, `429 too_many_attempts` with `retry_after`, and the errors of device
   binding
 - `POST /api/logout` → `{result}`
@@ -411,6 +415,59 @@ authenticator code works once: its period is remembered for 3 minutes. The event
 peer, never the username typed: it can be a password typed in the wrong field, and every role reads the events. A
 change of the login of the server during the check of the password (a code asked now) refuses the login.
 
+## Active Directory
+
+The members of one Active Directory group can be VPN users (`internal/core/directory.go`); the guide is
+[Active Directory](active-directory.md). The settings are JSON in the meta table (`directory`), with the password of
+the service account, which the API never answers: `GET /api/directory` has `bind_password_set` instead, and a `PUT`
+with an empty password keeps the one saved. Only an Administrator reads or changes them, tests them
+(`POST /api/directory/test`, the values of the form, nothing changes) or syncs at once (`POST /api/directory/sync`,
+with `{"disable": n}` to confirm a sync that held users).
+
+A user of the directory has its `objectGUID` in hex in `users.directory_id` (schema 12) and no password hash. Its
+username, full name and state follow the account: `PUT /api/users/{id}` refuses a change of them, or a password
+(`directory`). Its authenticator, its peers and the rest are the same as for a local user.
+
+**The sync** runs every `sync_minutes` (15 by default, 5 to 1440), its first one 10 seconds after the start and at
+once when the settings turn it on, one at a time, the LDAP calls out of the lock. It reads the group with
+`(memberOf:1.2.840.113556.1.4.1941:=<group>)`, the members of nested groups too, in pages of 500, at most 10,000. By
+`objectGUID`: a new member is added (`user_added`, by `directory sync`); a renamed account, a new display name, an
+account disabled (`userAccountControl` bit 2) or expired (`accountExpires`) or enabled again changes its user
+(`user_changed`); a user whose account is no longer in the group is disabled. A user disabled ends its sessions. An
+empty group disables nobody: the status has an error instead. Nor does a sync that would disable more than
+`DirectoryHoldMin` (5) users, and more than a quarter of the enabled users of the directory, at once: their usernames
+are in the status (`held`, event `directory_held`), the other changes go on, and `{"disable": n}` from an Administrator
+disables them when they're at most n (event `directory_confirmed`). A failed sync is tried again within
+`MinSyncMinutes` (5); `directory_failed` and `directory_restored` mark the start and the end of the failures, and two in
+a row show in the warning at the top of the web UI (`directory` in `GET /api/status`), as does a held sync and a
+password of the service account that expires within 14 days (`msDS-UserPasswordExpiryTimeComputed` of the account,
+read at each sync). Left out, with a reason in the status: a username that
+`usernamePattern` refuses, the username of a local user (or, with `link_local_users`, that user becomes the account's:
+its password hash goes, its sessions end), of another account of the directory, or a rename to a username taken.
+
+**The login** of a user of the directory binds as the service account, looks the account up by `objectGUID` in the
+group, refuses a disabled one, then binds as the account with the password: never with an empty password, which LDAP
+takes as an anonymous bind. `data 775`, `532`/`773` and `533`/`701` in the error of Active Directory are a locked
+account, an expired password and a disabled account: `invalid_credentials` all the same, the reason in the event of the
+failed login; except an expired password (or one to change) with the right code, if the server asks for one:
+`password_expired`, which tells nothing to someone who doesn't have both. A user principal name logs in with the part
+before the `@` too. A directory that doesn't answer, or turned off, answers `503 unavailable` and counts no failure. The
+failures of such a peer from any IPs but the one of its latest login lock it out after `DirectoryPeerFailures` (5)
+instead of 20: Active Directory sees at most 10 wrong passwords of a user in 15 minutes.
+
+The connection is LDAPS or StartTLS, the certificate checked against the system's certificate authorities and the
+ones of `ca_certificates`. The domain controllers are tried in order, 5 seconds each to connect and encrypt, then 10
+seconds for each request. One that doesn't connect, or stops answering a request, is remembered in memory: logins try
+the others first, a sync tries them in order and forgets it once it answers. A sync whose domain controller stops
+answering a request goes on with the next one; the ones that didn't answer are in the status (`unanswered`) and a
+`directory_servers` check. The whole call ends by its deadline, 12 seconds for a login (the login page has 15 to
+answer) and 50 for a sync or a test (the web UI has 60): the deadlines are set on the TCP connection itself, since
+go-ldap has none for the TLS handshake of StartTLS. No call holds the lock of the service, so a directory that doesn't
+answer slows down only the logins of its users and the sync; a Sync now during a sync waits for it and answers its
+result. The System page has a
+`directory` check while the sync is on. A backup (version 6) has the settings, with the password, and the users'
+`directory_id`.
+
 ## Fallback addresses
 
 A server can have up to 4 other `host:port`, written after `Endpoint` in the configuration files as
@@ -599,7 +656,8 @@ servers and the peers, with their keys, password hashes and authenticator secret
 their peers, and their ids. Not the history of the sessions and of the connections, the events, the alerts, the
 certificate of the web UI, or the count of the changes (`version`, `updated_by`): it starts again at 1, and the
 restore logs every administrator out, their forms with them. The content is JSON with its own version (`BackupVersion`, 2 since the devices, 3 since the
-IPv6 networks, 4 since the routed servers, 5 since the access rules of the peers); a restore takes that version and
+IPv6 networks, 4 since the routed servers, 5 since the access rules of the peers, 6 since Active Directory and its
+users); a restore takes that version and
 the older ones, and refuses a newer one: an older Authway Server refuses a backup with IPv6 networks rather than lose
 them, with routed servers rather than translate them, or with access rules rather than open all the networks to the
 peers. A backup of version 1 has no device: the peers of the servers with binding enroll one at their next login. One

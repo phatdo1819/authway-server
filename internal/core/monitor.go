@@ -9,8 +9,9 @@ import (
 // configuration can share a session with the strict lock.
 const TickInterval = 5 * time.Second
 
-// Run checks the sessions until ctx ends.
+// Run checks the sessions, and syncs the users of Active Directory, until ctx ends.
 func (s *Service) Run(ctx context.Context) {
+	go s.runDirectory(ctx)
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	for {

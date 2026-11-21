@@ -5,7 +5,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/phatdo1819/authway-server/internal/secret"
 	"github.com/phatdo1819/authway-server/internal/store"
 	"github.com/phatdo1819/authway-server/internal/totp"
 )
@@ -74,6 +73,26 @@ func (s *Service) UpdateUser(by Actor, id int64, input UserInput) (*UserView, er
 		}
 		return nil, &ChangedError{Current: view, By: current.UpdatedBy, At: current.UpdatedAt}
 	}
+	// a user of Active Directory gets its username, full name, state and password from there: the next sync would
+	// undo a change made here
+	if current.FromDirectory() {
+		var c checks
+		if checked.Username != current.Username {
+			c.fail("username", "directory")
+		}
+		if checked.FullName != current.FullName {
+			c.fail("full_name", "directory")
+		}
+		if checked.Disabled != current.Disabled {
+			c.fail("disabled", "directory")
+		}
+		if hash != "" {
+			c.fail("password", "directory")
+		}
+		if err := c.err(); err != nil {
+			return nil, err
+		}
+	}
 	if other, err := s.db.Q().UserByName(checked.Username); err == nil && other.ID != id {
 		return nil, &ValidationError{Fields: map[string]string{"username": "taken"}}
 	}
@@ -114,17 +133,28 @@ func (s *Service) DeleteUser(by Actor, id int64) error {
 		return notFound(err)
 	}
 	// its peers go with it: the event names them
+	peers, err := s.db.Q().PeersOfUser(id)
+	if err != nil {
+		return err
+	}
 	var gone []string
-	if peers, err := s.db.Q().PeersOfUser(id); err == nil {
-		servers, _ := s.db.Q().Servers()
-		names := serverNames(servers)
-		for _, peer := range peers {
-			gone = append(gone, names[peer.ServerID]+" · "+peer.Name)
-		}
+	servers, _ := s.db.Q().Servers()
+	names := serverNames(servers)
+	for _, peer := range peers {
+		gone = append(gone, names[peer.ServerID]+" · "+peer.Name)
 	}
 	s.endSessionsLocked(func(session store.Session) bool { return session.UserID == id }, EndUserChanged)
+	// as DeletePeer: a new peer can get the id of one of them, the history must not go on with it
+	for _, peer := range peers {
+		if err := s.db.Q().EndConnectionsOf(peer.ServerID, peer.ID); err != nil {
+			s.log.Error("can't end the connections of a peer", "peer", peer.Name, "error", err)
+		}
+	}
 	if err := s.db.Q().DeleteUser(id); err != nil {
 		return notFound(err)
+	}
+	for _, peer := range peers {
+		s.forgetPeerLocked(peer.ID)
 	}
 	s.log.Info("user deleted with its peers", "user", user.Username)
 	detail := ""
@@ -244,7 +274,7 @@ func (s *Service) checkUser(input UserInput, user *store.User, create bool) (str
 	if input.Password == "" {
 		return "", nil
 	}
-	return secret.HashPassword(input.Password)
+	return hashShared(input.Password)
 }
 
 func validFullName(name string) bool {

@@ -3,6 +3,7 @@ module github.com/phatdo1819/authway-server
 go 1.26.0
 
 require (
+	github.com/go-ldap/ldap/v3 v3.4.15
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
@@ -10,7 +11,9 @@ require (
 )
 
 require (
+	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/go-asn1-ber/asn1-ber v1.5.8 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
@@ -27,3 +30,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace github.com/go-asn1-ber/asn1-ber => ./third_party/asn1-ber

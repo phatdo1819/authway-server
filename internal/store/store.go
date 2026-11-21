@@ -209,6 +209,10 @@ var migrations = []string{
 		last_used_from TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX admin_devices_admin ON admin_devices(admin_id);`,
+	// 12: the users synced from Active Directory: the objectGUID of their account, in hex. '' for a local user; a user
+	// of the directory has no password of its own, the directory checks it
+	`ALTER TABLE users ADD COLUMN directory_id TEXT NOT NULL DEFAULT '';
+	CREATE UNIQUE INDEX users_by_directory_id ON users (directory_id) WHERE directory_id != '';`,
 }
 
 // Store is safe for concurrent use: database/sql serializes on its single connection.

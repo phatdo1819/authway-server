@@ -55,7 +55,7 @@ sudo ./install.sh --yes --public-host vpn.example.com --ui-address 192.168.1.10
 | `--timezone ZONE` | The time zone of the log, `Europe/Rome` say. The one of the host if not given. |
 | `--host-routes`, `--no-host-routes` | Turn on or off the [routed servers through the Docker host](routed-servers.md#through-the-docker-host). |
 | `--dir DIR` | The install folder: `/opt/authway-server`, or the folder of the Authway Server that already runs. |
-| `--image REF` | Use a published image instead of building one, `ghcr.io/phatdo1819/authway-server:0.2.0`: for a host with little memory. |
+| `--image REF` | Use a published image instead of building one, `ghcr.io/phatdo1819/authway-server:0.3.0`: for a host with little memory. |
 | `--repo URL`, `--ref REF` | Get the source with git, when the script runs alone, not from a copy of the source. |
 | `--no-docker-install` | Stop instead of installing Docker when it's missing. |
 | `--rollback` | Go back to the version before the last upgrade: see [Go back](#go-back). |

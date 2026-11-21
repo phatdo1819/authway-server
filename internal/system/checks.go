@@ -208,6 +208,48 @@ func checks(s Snapshot, state State, readErr string, log *LogRing, now time.Time
 		}
 	}
 
+	// only when the users of Active Directory are synced
+	if d := state.Directory; d != nil {
+		switch {
+		case d.At.IsZero():
+			add("directory", CheckUnknown, "Active Directory hasn't synced yet", "The first sync runs within a minute.")
+		case d.Error != "":
+			add("directory", CheckError, "Can't sync with Active Directory",
+				capitalize(d.Error)+". Authway Server tries again at the next sync. Until then, changes in Active Directory don't reach its users.")
+		case d.Held > 0:
+			users := fmt.Sprintf("%d users", d.Held)
+			add("directory", CheckWarning, "An Active Directory sync is waiting for you",
+				"It would disable "+users+" at once, so it disabled no one. Check them in Settings › Active Directory, and confirm there if it's right.")
+		default:
+			members := fmt.Sprintf("%d members", d.Members)
+			if d.Members == 1 {
+				members = "1 member"
+			}
+			synced := "Just synced."
+			if age := now.Sub(d.At); age >= time.Second {
+				synced = "Last synced " + ageText(age) + " ago."
+			}
+			add("directory", CheckOK, "Synced with Active Directory", "The group has "+members+". "+synced)
+		}
+		if len(d.Unanswered) > 0 {
+			add("directory_servers", CheckWarning, "A domain controller doesn't answer",
+				"At the latest sync: "+strings.Join(d.Unanswered, "; ")+". The next one in the list answered instead.")
+		}
+		if !d.PasswordExpires.IsZero() {
+			switch left := d.PasswordExpires.Sub(now); {
+			case left <= 0:
+				add("directory_password", CheckError, "The service account's password has expired",
+					"It expired on "+dateText(d.PasswordExpires)+". Set a new one in Active Directory, then in Settings › Active Directory.")
+			case left <= DirectoryPasswordWarning:
+				add("directory_password", CheckWarning, "The service account's password expires soon",
+					"On "+dateText(d.PasswordExpires)+", in "+daysText(left)+". Set a new one in Active Directory, then in Settings › Active Directory, or users of Active Directory won't be able to log in.")
+			default:
+				add("directory_password", CheckOK, "The service account's password is valid",
+					"Until "+dateText(d.PasswordExpires)+".")
+			}
+		}
+	}
+
 	switch {
 	case s.Host.ClockSynced == nil:
 		add("clock", CheckUnknown, "Can't tell whether the clock is synchronized",
@@ -387,6 +429,22 @@ func capitalize(text string) string {
 		return text
 	}
 	return strings.ToUpper(text[:1]) + text[1:]
+}
+
+// DirectoryPasswordWarning is how long before the password of the service account of Active Directory expires the
+// warnings start
+const DirectoryPasswordWarning = 14 * 24 * time.Hour
+
+// daysText is a time left in days: "1 day", "3 days", "less than a day"
+func daysText(left time.Duration) string {
+	days := int(left / (24 * time.Hour))
+	switch days {
+	case 0:
+		return "less than a day"
+	case 1:
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
 }
 
 func dateText(at time.Time) string {

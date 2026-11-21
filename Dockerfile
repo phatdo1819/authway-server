@@ -11,13 +11,15 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS server
 WORKDIR /src
 COPY go.mod go.sum ./
+# a module that go.mod replaces with a folder of the source: needed before the download
+COPY third_party ./third_party
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY --from=ui /src/internal/admin/ui/dist ./internal/admin/ui/dist
 ARG TARGETOS
 ARG TARGETARCH
-# empty: the version of the source, in cmd/authway-server/main.go. Set it to tell builds apart: 0.2.0+abc1234
+# empty: the version of the source, in cmd/authway-server/main.go. Set it to tell builds apart: 0.3.0+abc1234
 ARG VERSION=
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w ${VERSION:+-X main.version=$VERSION}" -o /out/authway-server ./cmd/authway-server

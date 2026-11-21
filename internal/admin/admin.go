@@ -87,6 +87,9 @@ type Admin struct {
 	codeFailures map[int64][]time.Time
 	// wrong passwords of the changes of the own account, by administrator
 	passwordFailures map[int64][]time.Time
+	// the checks of the own password under way, by administrator: they count toward the limit until they end, so
+	// requests sent at once can't try more passwords than maxPasswordFailures
+	passwordChecks map[int64]int
 }
 
 // attempt is a login from an address: counted before its password check, so the logins sent at once can't all pass
@@ -128,7 +131,7 @@ func New(service *core.Service, options Options) *Admin {
 	return &Admin{
 		core: service, log: options.Log, secure: options.Secure, proxies: options.TrustedProxies,
 		sessions: map[string]*session{}, failures: map[netip.Addr][]*attempt{}, codeFailures: map[int64][]time.Time{},
-		passwordFailures: map[int64][]time.Time{},
+		passwordFailures: map[int64][]time.Time{}, passwordChecks: map[int64]int{},
 	}
 }
 
@@ -189,6 +192,42 @@ func (a *Admin) Handler() http.Handler {
 			return nil, err
 		}
 		return a.core.SetSettings(actor(who, r), input)
+	})
+
+	// Active Directory: the users of a group are synced, and their passwords checked there. The settings have the
+	// password of a service account of the directory: an Administrator. A test reads the group with the values of
+	// the form, saved or not, and changes nothing
+	route("GET /api/directory", needAdmin, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		return a.core.Directory(), nil
+	})
+	route("PUT /api/directory", needAdmin, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		var input core.DirectorySettings
+		if err := readJSON(r, &input); err != nil {
+			return nil, err
+		}
+		return a.core.SetDirectory(actor(who, r), input)
+	})
+	route("POST /api/directory/test", needAdmin, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		var input core.DirectorySettings
+		if err := readJSON(r, &input); err != nil {
+			return nil, err
+		}
+		return a.core.TestDirectory(input)
+	})
+	// Sync now; with {"disable": n}, an administrator confirms that a sync that held users disables up to n of them
+	route("POST /api/directory/sync", needAdmin, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		var input struct {
+			Disable int `json:"disable"`
+		}
+		if r.ContentLength != 0 {
+			if err := readJSON(r, &input); err != nil {
+				return nil, err
+			}
+		}
+		if input.Disable < 0 {
+			return nil, errBadRequest
+		}
+		return a.core.SyncDirectory(actor(who, r), input.Disable)
 	})
 
 	// a backup has every key and password hash, and a restore replaces everything: an Administrator, with the password
@@ -817,23 +856,43 @@ func (e *tooManyError) Error() string {
 	return "too many attempts"
 }
 
+// passwordCheckRetry is how long, in seconds, a change of the own account waits when the checks under way already
+// reach the limit: they end in about a second, with a wrong password or not.
+const passwordCheckRetry = 2
+
 // withPassword runs a change of the own account that needs its password: the wrong passwords count, and 10 in 15
-// minutes stop these changes, so a session left open can't be used to find the password.
+// minutes stop these changes, so a session left open can't be used to find the password. A check counts from before
+// it starts, as the logins do: changes sent at once can't all pass the limit.
 func (a *Admin) withPassword(who *identity, change func() (any, error)) (any, error) {
+	id := who.id()
 	now := time.Now()
 	a.mu.Lock()
-	recent := recentFailures(a.passwordFailures[who.id()], now)
-	a.passwordFailures[who.id()] = recent
-	a.mu.Unlock()
-	if len(recent) >= maxPasswordFailures {
+	recent := recentFailures(a.passwordFailures[id], now)
+	a.passwordFailures[id] = recent
+	switch {
+	case len(recent) >= maxPasswordFailures:
+		a.mu.Unlock()
 		return nil, &tooManyError{RetryAfter: retryAfter(recent, maxPasswordFailures, now)}
+	case len(recent)+a.passwordChecks[id] >= maxPasswordFailures:
+		a.mu.Unlock()
+		return nil, &tooManyError{RetryAfter: passwordCheckRetry}
 	}
+	a.passwordChecks[id]++
+	a.mu.Unlock()
 	result, err := change()
 	var validation *core.ValidationError
-	if errors.As(err, &validation) && (validation.Fields["current"] == "wrong" || validation.Fields["password"] == "wrong") {
-		a.mu.Lock()
-		a.passwordFailures[who.id()] = append(a.passwordFailures[who.id()], now)
-		a.mu.Unlock()
+	wrong := errors.As(err, &validation) && (validation.Fields["current"] == "wrong" || validation.Fields["password"] == "wrong")
+	a.mu.Lock()
+	if a.passwordChecks[id] <= 1 {
+		delete(a.passwordChecks, id)
+	} else {
+		a.passwordChecks[id]--
+	}
+	if wrong {
+		a.passwordFailures[id] = append(a.passwordFailures[id], now)
+	}
+	a.mu.Unlock()
+	if wrong {
 		a.log.Warn("wrong password given by a session of an administrator", "user", who.admin.Username)
 	}
 	return result, err

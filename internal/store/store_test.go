@@ -122,6 +122,40 @@ func TestTOTPConfirmedMigration(t *testing.T) {
 	}
 }
 
+// The latest connection of each peer is the one seen last, and of two seen at the same time the later row.
+func TestLatestConnections(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "authway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	q := s.Q()
+	if latest, err := q.LatestConnections(); err != nil || len(latest) != 0 {
+		t.Fatalf("an empty history: %v %v", latest, err)
+	}
+	// the rows get the ids 1 to 6 in this order
+	for _, row := range []struct{ peer, seen int64 }{{1, 100}, {1, 300}, {1, 200}, {2, 50}, {2, 50}, {3, 10}} {
+		c := &Connection{ServerID: 1, PeerID: row.peer, ServerName: "s", PeerName: "p", Address: "10.8.0.2",
+			StartedAt: row.seen, LastSeen: row.seen}
+		if err := q.CreateConnection(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, err := q.LatestConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]int64{1: 2, 2: 5, 3: 6}
+	if len(latest) != len(want) {
+		t.Fatalf("latest: %+v", latest)
+	}
+	for peer, id := range want {
+		if latest[peer].ID != id || latest[peer].PeerID != peer {
+			t.Errorf("peer %d: row %d, want %d", peer, latest[peer].ID, id)
+		}
+	}
+}
+
 // A new database gets the schema of this version, no copy. One of an older version is copied first, whole: the
 // version of before opens the copy. One of a newer version isn't opened.
 func TestSchemaChange(t *testing.T) {

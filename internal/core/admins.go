@@ -127,7 +127,7 @@ func (s *Service) EnsureAdmin(username, password string) (string, error) {
 }
 
 // AdminLogin checks the credentials of an administrator. A disabled administrator is returned too: the caller
-// says so, once the password is right.
+// says so, once the password is right. The caller runs it in the turn of the hashes of the web UI (secret.Shared).
 func (s *Service) AdminLogin(username, password string) (*store.Admin, bool) {
 	s.mu.Lock()
 	admin, err := s.db.Q().AdminByName(strings.TrimSpace(username))
@@ -291,7 +291,7 @@ func (s *Service) CreateAdmin(by Actor, input AdminInput) (*AdminView, error) {
 	if err := c.err(); err != nil {
 		return nil, err
 	}
-	hash, err := secret.HashPassword(input.Password)
+	hash, err := hashShared(input.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +430,7 @@ func (s *Service) ResetAdminPassword(by Actor, id int64, password string) error 
 	if code := s.checkAdminPassword(password, admin.Username); code != "" {
 		return &ValidationError{Fields: map[string]string{"password": code}}
 	}
-	hash, err := secret.HashPassword(password)
+	hash, err := hashShared(password)
 	if err != nil {
 		return err
 	}
@@ -480,7 +480,7 @@ func (s *Service) ChangeAdminPassword(by Actor, current, password string) error 
 		return err
 	}
 	var c checks
-	if !secret.VerifyPassword(current, admin.PasswordHash) {
+	if len(current) > MaxPassword || !verifyShared(current, admin.PasswordHash) {
 		c.fail("current", "wrong")
 	}
 	if code := s.checkAdminPassword(password, admin.Username); code != "" {
@@ -491,7 +491,7 @@ func (s *Service) ChangeAdminPassword(by Actor, current, password string) error 
 	if err := c.err(); err != nil {
 		return err
 	}
-	hash, err := secret.HashPassword(password)
+	hash, err := hashShared(password)
 	if err != nil {
 		return err
 	}
@@ -512,7 +512,7 @@ func (s *Service) StartAdminTOTP(id int64, password string) (*TOTPSetup, error) 
 	if err != nil {
 		return nil, err
 	}
-	if len(password) > MaxPassword || !secret.VerifyPassword(password, admin.PasswordHash) {
+	if len(password) > MaxPassword || !verifyShared(password, admin.PasswordHash) {
 		return nil, &ValidationError{Fields: map[string]string{"password": "wrong"}}
 	}
 	s.mu.Lock()
@@ -561,7 +561,7 @@ func (s *Service) RemoveOwnAdminTOTP(by Actor, password string) error {
 	if err != nil {
 		return err
 	}
-	if !secret.VerifyPassword(password, admin.PasswordHash) {
+	if len(password) > MaxPassword || !verifyShared(password, admin.PasswordHash) {
 		return &ValidationError{Fields: map[string]string{"password": "wrong"}}
 	}
 	s.mu.Lock()

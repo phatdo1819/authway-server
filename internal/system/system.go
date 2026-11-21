@@ -452,6 +452,24 @@ type State struct {
 	IPv6Servers []string
 	// the enabled servers routed to their networks
 	Routed []RoutedServer
+	// the sync of Active Directory, nil when it's off
+	Directory *DirectoryState
+}
+
+// DirectoryState is the latest sync of Active Directory.
+type DirectoryState struct {
+	// when it ended, zero before the first
+	At time.Time
+	// why it failed, "" when it worked
+	Error string
+	// the accounts in the group
+	Members int
+	// the users a sync didn't disable, waiting for an administrator to confirm
+	Held int
+	// when the password of the service account expires; zero when it never does, or the directory doesn't tell
+	PasswordExpires time.Time
+	// the domain controllers that didn't answer at the latest sync, and why
+	Unanswered []string
 }
 
 type ServerInterface struct {

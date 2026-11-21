@@ -24,6 +24,7 @@ func (s *Service) changeLocked(by Actor, event store.Event) {
 // webKinds are the events of the web UI: the logins of the administrators and the changes. The others are the events
 // of the peers: their logins, sessions, copies and devices.
 var webKinds = []string{
+	"directory_failed", "directory_restored", "directory_held", "directory_confirmed",
 	"admin_login", "admin_login_failed", "admin_added", "admin_changed", "admin_deleted", "admin_password_reset",
 	"admin_password_changed", "admin_mfa_on", "admin_mfa_removed", "settings_changed", "backup_made", "backup_restored",
 	"server_added", "server_changed", "server_deleted", "router_routes_updated",

@@ -19,6 +19,8 @@ const LOGIN_ERRORS = {
   device_mismatch: "This VPN configuration is registered to another device. Contact your administrator.",
   device_not_enrolled: "This VPN configuration can't enroll a new device right now. Contact your administrator.",
   challenge_expired: "The login took too long. Try again.",
+  unavailable: "Your password can't be checked right now. Try again in a few minutes, or contact your administrator.",
+  password_expired: "Your password has expired, or has to be changed. Change it the way you usually change your Windows password, then log in again.",
 };
 
 const $ = (id) => document.getElementById(id);

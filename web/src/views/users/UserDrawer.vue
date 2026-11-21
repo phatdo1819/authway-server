@@ -23,6 +23,8 @@ const busy = ref(false)
 // a password made here, shown so that it can be given to the user
 const generated = ref('')
 const policy = computed(() => policyText(session.me?.password_policy))
+// synced from Active Directory: nothing here can change, the next sync would undo it
+const fromDirectory = computed(() => Boolean(props.user?.directory))
 // another administrator saving this user meanwhile
 const guard = useEditGuard((user: User) => ({ username: user.username, full_name: user.full_name, disabled: user.disabled }), {
   username: 'Username',
@@ -105,53 +107,68 @@ function useTheirs() {
 </script>
 
 <template>
-  <UiDrawer :open="open" :title="user ? `Edit ${user.username}` : 'Add user'" @close="emit('close')">
+  <UiDrawer :open="open" :title="fromDirectory ? user?.username ?? '' : user ? `Edit ${user.username}` : 'Add user'" @close="emit('close')">
     <form id="user-form" class="space-y-6" novalidate @submit.prevent="save">
       <ConflictNotice :conflict="conflict" noun="user" @theirs="useTheirs" />
+      <UiNotice v-if="fromDirectory" tone="info" title="Synced from Active Directory">
+        Change this user's username, full name, password or status in Active Directory. The next sync brings the change
+        here. The authenticator and peers are managed here, as for other users.
+      </UiNotice>
       <UiInput
         v-model="form.username"
         label="Username"
         autocomplete="off"
+        :disabled="fromDirectory"
         :error="fieldMessage(errors.username)"
         helper="Letters, digits and . _ @ - only. The user enters this on the VPN login page."
       />
-      <UiInput v-model="form.full_name" label="Full name" optional :error="fieldMessage(errors.full_name)" />
-      <UiInput
-        v-model="form.password"
-        :label="user ? 'New password' : 'Password'"
-        type="password"
-        autocomplete="new-password"
-        :optional="Boolean(user)"
-        :error="fieldMessage(errors.password)"
-        :helper="user ? `Leave empty to keep the current password. Setting a new one logs the user out. ${policy}` : policy"
-      />
-      <UiInput
-        v-model="confirmPassword"
-        label="Confirm password"
-        type="password"
-        autocomplete="new-password"
-        :error="errors.confirm ? `The passwords don't match.` : ''"
-      />
-      <div class="space-y-2">
-        <UiButton size="sm" icon="key" @click="generate">Generate a password</UiButton>
-        <div v-if="generated" class="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-2 dark:bg-slate-800">
-          <span class="min-w-0 flex-1 font-mono text-sm break-all select-all">{{ generated }}</span>
-          <UiButton size="sm" icon="copy" @click="copyGenerated">Copy</UiButton>
+      <UiInput v-model="form.full_name" label="Full name" optional :disabled="fromDirectory" :error="fieldMessage(errors.full_name)" />
+      <template v-if="!fromDirectory">
+        <UiInput
+          v-model="form.password"
+          :label="user ? 'New password' : 'Password'"
+          type="password"
+          autocomplete="new-password"
+          :optional="Boolean(user)"
+          :error="fieldMessage(errors.password)"
+          :helper="user ? `Leave empty to keep the current password. Setting a new one logs the user out. ${policy}` : policy"
+        />
+        <UiInput
+          v-model="confirmPassword"
+          label="Confirm password"
+          type="password"
+          autocomplete="new-password"
+          :error="errors.confirm ? `The passwords don't match.` : ''"
+        />
+        <div class="space-y-2">
+          <UiButton size="sm" icon="key" @click="generate">Generate a password</UiButton>
+          <div v-if="generated" class="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-2 dark:bg-slate-800">
+            <span class="min-w-0 flex-1 font-mono text-sm break-all select-all">{{ generated }}</span>
+            <UiButton size="sm" icon="copy" @click="copyGenerated">Copy</UiButton>
+          </div>
+          <p v-if="generated" class="text-xs text-slate-500 dark:text-slate-400">
+            Give this password to the user before you save. It won't be shown again.
+          </p>
         </div>
-        <p v-if="generated" class="text-xs text-slate-500 dark:text-slate-400">
-          Give this password to the user before you save. It won't be shown again.
-        </p>
-      </div>
+      </template>
       <UiToggle
         v-model="form.disabled"
         label="Disabled"
-        description="The user is logged out now and can't log in again. Their peers are kept."
+        :disabled="fromDirectory"
+        :description="
+          fromDirectory
+            ? 'Follows Active Directory: disabled when the account is disabled there or leaves the group.'
+            : `The user is logged out now and can't log in again. Their peers are kept.`
+        "
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </form>
     <template #footer>
-      <UiButton @click="emit('close')">Cancel</UiButton>
-      <UiButton type="submit" form="user-form" variant="primary" :loading="busy">{{ user ? 'Save' : 'Add user' }}</UiButton>
+      <UiButton v-if="fromDirectory" @click="emit('close')">Close</UiButton>
+      <template v-else>
+        <UiButton @click="emit('close')">Cancel</UiButton>
+        <UiButton type="submit" form="user-form" variant="primary" :loading="busy">{{ user ? 'Save' : 'Add user' }}</UiButton>
+      </template>
     </template>
   </UiDrawer>
 </template>

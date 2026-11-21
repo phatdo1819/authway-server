@@ -102,6 +102,7 @@ any more: `--rollback` then puts the copy back, and keeps the newer database asi
 | [First steps](docs/first-steps.md) | From the first login to the first peer, and connecting a device with Authway or a WireGuard app |
 | [Good to know](docs/good-to-know.md) | Ports and security, running it, data and backups, administrators, peers and devices, troubleshooting |
 | [IPv6](docs/ipv6.md) | IPv6 in the tunnels and on the Docker network |
+| [Active Directory](docs/active-directory.md) | Adding VPN users from an Active Directory group, with their Windows passwords |
 | [Routed servers](docs/routed-servers.md) | Letting the networks see the address of each peer: through the Docker host, or on macvlan, and switching between NAT and routed |
 | [Development](docs/development.md) | Building and testing the source |
 | [Design](docs/design.md) | How it works inside |

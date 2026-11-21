@@ -23,13 +23,15 @@ import (
 // with their keys, password hashes and authenticator secrets, sealed with a passphrase (internal/backup). The
 // history of the sessions, the events and the alerts aren't in it.
 
-// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 5 added
-// the access rules of the peers: an older Authway Server would let them reach all the networks of their server. 4 added
+// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 6 added
+// the users of Active Directory and its settings: an older Authway Server would refuse their users without a password
+// hash. 5 added the access rules of the peers: an older Authway Server would let them reach all the networks of their
+// server. 4 added
 // the routed servers: an older Authway Server would translate their networks again. 3 added the IPv6 networks of
 // the servers: an older Authway Server refuses the backup rather than lose them. 2 added
 // the devices, device binding and the traffic between peers: a backup of version 1 has neither, its peers enroll
 // a device when their server asks for one.
-const BackupVersion = 5
+const BackupVersion = 6
 
 var interfacePattern = regexp.MustCompile(`^wg[0-9]{1,3}$`)
 
@@ -56,6 +58,8 @@ type backupSettings struct {
 	HistoryDays int `json:"history_days,omitempty"`
 	// nil when never set, and in the backups made before it: the default. 0 is off.
 	AdminRememberDays *int `json:"admin_remember_days,omitempty"`
+	// Active Directory, with the password of its service account: nil when never set, and before version 6
+	Directory *DirectorySettings `json:"directory,omitempty"`
 }
 
 // backupDevice is the device of a peer, or its enrollment: a restore on a new host keeps the devices enrolled,
@@ -100,6 +104,8 @@ type backupUser struct {
 	Disabled        bool  `json:"disabled"`
 	CreatedAt       int64 `json:"created_at"`
 	UpdatedAt       int64 `json:"updated_at"`
+	// a user of Active Directory, since version 6: no password hash
+	DirectoryID string `json:"directory_id,omitempty"`
 }
 
 type backupServer struct {
@@ -198,7 +204,7 @@ func (s *Service) Backup(by Actor, password, passphrase string) (string, []byte,
 		return "", nil, err
 	}
 	var c checks
-	if len(password) > MaxPassword || !secret.VerifyPassword(password, admin.PasswordHash) {
+	if len(password) > MaxPassword || !verifyShared(password, admin.PasswordHash) {
 		c.fail("password", "wrong")
 	}
 	if code := backup.CheckPassphrase(passphrase); code != "" {
@@ -218,8 +224,9 @@ func (s *Service) Backup(by Actor, password, passphrase string) (string, []byte,
 	if err != nil {
 		return "", nil, err
 	}
-	// the key takes time and memory: out of the lock
-	sealed, err := backup.Seal(data, passphrase, now)
+	// the key takes time and memory: out of the lock, in the turn of the hashes of the web UI
+	var sealed []byte
+	secret.Shared(nil, func() { sealed, err = backup.Seal(data, passphrase, now) })
 	if err != nil {
 		return "", nil, err
 	}
@@ -261,6 +268,14 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 		days := s.adminRememberDaysLocked()
 		remember = &days
 	}
+	var directorySettings *DirectorySettings
+	if stored, err = q.Meta(metaDirectory); err != nil {
+		return nil, err
+	}
+	if stored != "" {
+		settings := s.directorySettingsLocked()
+		directorySettings = &settings
+	}
 	version := s.opts.Version
 	if version == "" {
 		version = "dev"
@@ -268,7 +283,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 	content := &backupContent{
 		Version: BackupVersion, CreatedAt: now.Unix(), MadeBy: "Authway Server " + version,
 		Settings: backupSettings{PublicHost: host, PasswordPolicy: s.policyLocked(), RequireAdminMFA: s.requireAdminMFALocked(),
-			EnrollHours: hours, HistoryDays: days, AdminRememberDays: remember},
+			EnrollHours: hours, HistoryDays: days, AdminRememberDays: remember, Directory: directorySettings},
 		Admins: []backupAdmin{}, Users: []backupUser{}, Servers: []backupServer{}, Peers: []backupPeer{},
 		Devices: []backupDevice{},
 	}
@@ -291,6 +306,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 		content.Users = append(content.Users, backupUser{
 			ID: u.ID, Username: u.Username, FullName: u.FullName, PasswordHash: u.PasswordHash, TOTPSecret: u.TOTPSecret,
 			TOTPConfirmedAt: u.TOTPConfirmedAt, Disabled: u.Disabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+			DirectoryID: u.DirectoryID,
 		})
 	}
 	servers, err := q.Servers()
@@ -382,7 +398,7 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 	if err != nil {
 		return nil, err
 	}
-	if len(password) > MaxPassword || !secret.VerifyPassword(password, admin.PasswordHash) {
+	if len(password) > MaxPassword || !verifyShared(password, admin.PasswordHash) {
 		return nil, &ValidationError{Fields: map[string]string{"password": "wrong"}}
 	}
 	content, err := openBackup(data, passphrase)
@@ -425,9 +441,17 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 		if plan.settings.AdminRememberDays != nil {
 			remember = strconv.Itoa(*plan.settings.AdminRememberDays)
 		}
+		directorySettings := ""
+		if plan.settings.Directory != nil {
+			data, err := json.Marshal(plan.settings.Directory)
+			if err != nil {
+				return err
+			}
+			directorySettings = string(data)
+		}
 		for key, value := range map[string]string{
 			"public_host": plan.settings.PublicHost, "password_policy": string(policy), "require_admin_mfa": mfa,
-			"enroll_hours": hours, "history_days": days, metaRememberDays: remember,
+			"enroll_hours": hours, "history_days": days, metaRememberDays: remember, metaDirectory: directorySettings,
 		} {
 			if err := tx.SetMeta(key, value); err != nil {
 				return err
@@ -473,6 +497,12 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 	s.challenges = challenges{}
 	s.mismatches = map[int64]time.Time{}
 	s.counters = map[int64]peerCounters{}
+	// the directory of the backup, maybe another one: synced again at once
+	s.directoryStatus, s.directorySynced = DirectoryStatus{}, time.Time{}
+	select {
+	case s.directoryWake <- struct{}{}:
+	default:
+	}
 	s.generation++
 	s.applyLocked()
 	detail := fmt.Sprintf("backup of %s: %s", time.Unix(plan.summary.CreatedAt, 0).UTC().Format("2006-01-02 15:04 UTC"),
@@ -482,7 +512,8 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 	return &plan.summary, nil
 }
 
-// openBackup decrypts a backup: a wrong passphrase, a file that isn't a backup or a newer one are validation errors
+// openBackup decrypts a backup: a wrong passphrase, a file that isn't a backup or a newer one are validation errors.
+// The key is made in the turn of the hashes of the web UI: never with mu held.
 func openBackup(data []byte, passphrase string) (*backupContent, error) {
 	if len(data) == 0 {
 		return nil, &ValidationError{Fields: map[string]string{"backup": "required"}}
@@ -493,7 +524,9 @@ func openBackup(data []byte, passphrase string) (*backupContent, error) {
 	if len(passphrase) > backup.MaxPassphrase {
 		return nil, &ValidationError{Fields: map[string]string{"passphrase": "wrong"}}
 	}
-	plain, _, err := backup.Open(data, passphrase)
+	var plain []byte
+	var err error
+	secret.Shared(nil, func() { plain, _, err = backup.Open(data, passphrase) })
 	switch {
 	case errors.Is(err, backup.ErrPassphrase):
 		return nil, &ValidationError{Fields: map[string]string{"passphrase": "wrong"}}
@@ -557,9 +590,17 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 	if days := plan.settings.AdminRememberDays; days != nil && (*days < 0 || *days > MaxAdminRememberDays) {
 		return nil, badBackup("the days administrator devices are remembered aren't valid")
 	}
+	if plan.settings.Directory != nil {
+		checked, err := checkDirectory(*plan.settings.Directory, "")
+		if err != nil {
+			return nil, badBackup("the Active Directory settings aren't valid: %v", err)
+		}
+		plan.settings.Directory = &checked
+	}
 
 	userIDs := map[int64]bool{}
 	usernames := map[string]bool{}
+	directoryIDs := map[string]bool{}
 	for _, b := range content.Users {
 		name := strings.TrimSpace(b.Username)
 		switch {
@@ -571,17 +612,23 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 			return nil, badBackup("the user %s has no id of its own", short(name))
 		case !validFullName(b.FullName):
 			return nil, badBackup("the full name of the user %s isn't valid", short(name))
-		case !secret.ValidHash(b.PasswordHash):
+		case b.DirectoryID == "" && !secret.ValidHash(b.PasswordHash):
 			return nil, badBackup("the password hash of the user %s isn't valid", short(name))
+		// the directory checks the password of its users: they have none here
+		case b.DirectoryID != "" && (!validDirectoryID(b.DirectoryID) || directoryIDs[b.DirectoryID] || b.PasswordHash != ""):
+			return nil, badBackup("the Active Directory account of the user %s isn't valid", short(name))
 		case b.TOTPSecret != "" && !totp.ValidSecret(b.TOTPSecret):
 			return nil, badBackup("the authenticator of the user %s isn't valid", short(name))
 		}
 		userIDs[b.ID] = true
 		usernames[strings.ToLower(name)] = true
+		if b.DirectoryID != "" {
+			directoryIDs[b.DirectoryID] = true
+		}
 		plan.users = append(plan.users, store.User{
 			ID: b.ID, Username: name, FullName: strings.TrimSpace(b.FullName), PasswordHash: b.PasswordHash,
 			TOTPSecret: b.TOTPSecret, TOTPConfirmedAt: confirmedAt(b), Disabled: b.Disabled, CreatedAt: b.CreatedAt,
-			UpdatedAt: b.UpdatedAt,
+			UpdatedAt: b.UpdatedAt, DirectoryID: b.DirectoryID,
 		})
 	}
 

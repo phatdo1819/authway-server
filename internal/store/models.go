@@ -48,6 +48,14 @@ type User struct {
 	// web UI saved over a change made since it opened is refused
 	Version   int64
 	UpdatedBy string
+	// DirectoryID is the objectGUID of the Active Directory account of a user synced from the directory, in hex; ""
+	// for a local user. Such a user has no PasswordHash: the directory checks the password
+	DirectoryID string
+}
+
+// FromDirectory tells whether a user is synced from Active Directory.
+func (u *User) FromDirectory() bool {
+	return u.DirectoryID != ""
 }
 
 // AuthMode says what the peers of a server do before their traffic passes.
@@ -341,13 +349,13 @@ func (t *Tx) DeleteAdmin(id int64) error {
 
 // Users
 
-const userColumns = "id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, version, updated_by"
+const userColumns = "id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, version, updated_by, directory_id"
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var disabled int
 	err := row.Scan(&u.ID, &u.Username, &u.FullName, &u.PasswordHash, &u.TOTPSecret, &u.TOTPConfirmedAt, &disabled,
-		&u.CreatedAt, &u.UpdatedAt, &u.Version, &u.UpdatedBy)
+		&u.CreatedAt, &u.UpdatedAt, &u.Version, &u.UpdatedBy, &u.DirectoryID)
 	u.Disabled = disabled != 0
 	return &u, err
 }
@@ -380,8 +388,8 @@ func (t *Tx) UserByName(username string) (*User, error) {
 }
 
 func (t *Tx) CreateUser(u *User) error {
-	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt, u.UpdatedBy)
+	result, err := t.q.Exec("INSERT INTO users (id, username, full_name, password_hash, totp_secret, totp_confirmed_at, disabled, created_at, updated_at, updated_by, directory_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		nullID(u.ID), u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.CreatedAt, u.UpdatedAt, u.UpdatedBy, u.DirectoryID)
 	if err != nil {
 		return conflict(err)
 	}
@@ -391,8 +399,8 @@ func (t *Tx) CreateUser(u *User) error {
 }
 
 func (t *Tx) UpdateUser(u *User) error {
-	return updated(t.q.QueryRow("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, totp_confirmed_at = ?, disabled = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
-		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.UpdatedAt, u.UpdatedBy, u.ID), &u.Version)
+	return updated(t.q.QueryRow("UPDATE users SET username = ?, full_name = ?, password_hash = ?, totp_secret = ?, totp_confirmed_at = ?, disabled = ?, updated_at = ?, updated_by = ?, directory_id = ?, version = version + 1 WHERE id = ? RETURNING version",
+		u.Username, u.FullName, u.PasswordHash, u.TOTPSecret, u.TOTPConfirmedAt, boolInt(u.Disabled), u.UpdatedAt, u.UpdatedBy, u.DirectoryID, u.ID), &u.Version)
 }
 
 // ConfirmUserTOTP records the first code that worked with the authenticator of a user, once: not a change of an

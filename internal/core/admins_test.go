@@ -2,12 +2,63 @@ package core
 
 import (
 	"errors"
+	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/phatdo1819/authway-server/internal/secret"
 	"github.com/phatdo1819/authway-server/internal/store"
 	"github.com/phatdo1819/authway-server/internal/totp"
 )
+
+// The password checks of the web UI wait for the turn of its hashes, which its logins take too: however many an
+// administrator sends, the other slot of the hashing stays for the logins of the VPN, which never wait for that turn.
+func TestWebHashesTakeTurns(t *testing.T) {
+	f := setup(t)
+	id := f.admin()
+	server := f.server(store.AuthPassword)
+	peer := f.peer(server, f.user("alice"))
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	// a failure gives the turn back too: the other tests need it
+	defer free()
+	go secret.Shared(nil, func() {
+		close(held)
+		<-release
+	})
+	<-held
+	checked := make(chan error, 1)
+	go func() {
+		_, err := f.s.StartAdminTOTP(id, "Admin password 1")
+		checked <- err
+	}()
+	f.handshake(peer, "203.0.113.5")
+	logged := make(chan Answer, 1)
+	start := time.Now()
+	go func() {
+		logged <- f.s.Login(netip.MustParseAddr(peer.Address), "10.8.0.1", LoginRequest{Username: peer.Username, Password: "Secret,1234"})
+	}()
+	select {
+	case answer := <-logged:
+		if answer.Status != 200 {
+			t.Fatalf("a login of the VPN: %+v", answer)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a login of the VPN waits for the turn of the web UI")
+	}
+	// the check started first: out of its turn, it would be done within the time of another hash
+	select {
+	case err := <-checked:
+		t.Fatalf("a password check of the web UI ran out of its turn: %v", err)
+	case <-time.After(max(2*time.Since(start), 500*time.Millisecond)):
+	}
+	free()
+	if err := <-checked; err != nil {
+		t.Fatalf("the check, in its turn: %v", err)
+	}
+}
 
 func refusedCode(t *testing.T, err error) string {
 	t.Helper()

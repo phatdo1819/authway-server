@@ -287,6 +287,75 @@ func TestPasswordConfirmations(t *testing.T) {
 	}
 }
 
+// Changes of the own account sent at once count before their password check, as the logins do: a session can't try
+// more than 10 passwords by sending them together.
+func TestPasswordConfirmationsAtOnce(t *testing.T) {
+	h := newTestAPI(t)
+	admin := &client{t: t, h: h}
+	admin.login("admin", "Admin password 1", "")
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	statuses := map[int]int{}
+	for index := range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// the same session, a client of its own: client keeps the cookie of the latest answer
+			c := &client{t: t, h: h, cookie: admin.cookie}
+			w, _ := c.do("POST", "/api/me/totp", `{"password":"Guess `+strconv.Itoa(index)+`"}`, true)
+			mu.Lock()
+			statuses[w.Code]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	// a change is refused only while the failures and the checks under way reach 10, and each of those checks fails
+	if statuses[400] != maxPasswordFailures || statuses[429] != 30-maxPasswordFailures {
+		t.Fatalf("30 wrong passwords at once: %v", statuses)
+	}
+	if w, data := admin.do("POST", "/api/me/totp", `{"password":"Admin password 1"}`, true); w.Code != 429 {
+		t.Fatalf("the right password after them: %d %v", w.Code, data)
+	}
+}
+
+// The settings of Active Directory are an Administrator's, and the password of its service account never comes back.
+func TestDirectoryAPI(t *testing.T) {
+	h := newTestAPI(t)
+	admin := &client{t: t, h: h}
+	admin.login("admin", "Admin password 1", "")
+	body := `{"servers":["dc1.example.com"],"bind_user":"svc-authway@example.com","bind_password":"Service pass 1",` +
+		`"base_dn":"DC=example,DC=com","group":"CN=VPN Users,DC=example,DC=com"}`
+	w, data := admin.do("PUT", "/api/directory", body, true)
+	if w.Code != 200 || data["bind_password_set"] != true || strings.Contains(w.Body.String(), "Service pass") {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	if w, _ := admin.do("GET", "/api/directory", "", true); w.Code != 200 || strings.Contains(w.Body.String(), "Service pass") ||
+		!strings.Contains(w.Body.String(), `"group":"CN=VPN Users,DC=example,DC=com"`) {
+		t.Fatalf("read: %d %s", w.Code, w.Body.String())
+	}
+	if w, data := admin.do("PUT", "/api/directory", `{"enabled":true}`, true); w.Code != 400 || data["error"] != "validation" {
+		t.Fatalf("turned on without settings: %d %v", w.Code, data)
+	}
+	// Sync now, without a body or with how many users to disable: here without a directory to ask
+	for body, code := range map[string]int{"": 404, `{}`: 404, `{"disable":6}`: 404, `{"disable":-1}`: 400, `not json`: 400} {
+		if w, _ := admin.do("POST", "/api/directory/sync", body, true); w.Code != code {
+			t.Errorf("sync with %q: %d", body, w.Code)
+		}
+	}
+	admin.do("POST", "/api/admins", `{"username":"olga","role":"operator","password":"Orange sky 98765"}`, true)
+	olga := &client{t: t, h: h}
+	olga.login("olga", "Orange sky 98765", "")
+	olga.do("PUT", "/api/me/password", `{"current":"Orange sky 98765","password":"Orange sky 987654"}`, true)
+	for _, route := range []struct{ method, path, body string }{
+		{"GET", "/api/directory", ""}, {"PUT", "/api/directory", body}, {"POST", "/api/directory/test", body},
+		{"POST", "/api/directory/sync", ""},
+	} {
+		if w, data := olga.do(route.method, route.path, route.body, true); w.Code != 403 || data["error"] != "not_allowed" {
+			t.Errorf("an operator, %s %s: %d %v", route.method, route.path, w.Code, data)
+		}
+	}
+}
+
 // Logins sent at once count before their password check: they can't all pass the limit of 10 failures.
 func TestLoginAttemptsAtOnce(t *testing.T) {
 	h := newTestAPI(t)

@@ -1,6 +1,10 @@
 package core
 
-import "github.com/phatdo1819/authway-server/internal/system"
+import (
+	"time"
+
+	"github.com/phatdo1819/authway-server/internal/system"
+)
 
 // System is the System page now: the resources of the host, the interfaces, and the checks, with what Authway
 // Server knows of itself.
@@ -10,6 +14,17 @@ func (s *Service) System() (system.Snapshot, error) {
 	}
 	s.mu.Lock()
 	state := system.State{ApplyError: s.applyError, StatsError: s.statsError, StatsAt: s.statsAt}
+	if s.opts.Directory != nil && s.directorySettingsLocked().Enabled {
+		status := s.directoryStatus
+		state.Directory = &system.DirectoryState{Error: status.Error, Members: status.Members, Held: len(status.Held),
+			Unanswered: status.Unanswered}
+		if status.At != 0 {
+			state.Directory.At = time.Unix(status.At, 0)
+		}
+		if status.PasswordExpires != 0 {
+			state.Directory.PasswordExpires = time.Unix(status.PasswordExpires, 0)
+		}
+	}
 	servers, err := s.db.Q().Servers()
 	s.mu.Unlock()
 	if err != nil {

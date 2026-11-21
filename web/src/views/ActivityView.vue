@@ -255,6 +255,9 @@ function eventPlace(event: EventItem): string {
   if (event.server_name) {
     return event.peer_name ? `${event.server_name} · ${event.peer_name}` : event.server_name
   }
+  if (event.kind.startsWith('directory_')) {
+    return 'Active Directory'
+  }
   return isWebEvent(event.kind) ? 'Web UI' : '—'
 }
 

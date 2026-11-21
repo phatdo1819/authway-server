@@ -98,9 +98,19 @@ server can add more:
   health check shows in `docker ps`.
 
 
+## Active Directory
+
+- **Users from an Active Directory group**: members of the group become users, and renames, disabled accounts and
+  members who leave follow at each sync. Their password stays in Active Directory, which checks it at every VPN login.
+  Authenticator codes, peers and devices stay in Authway Server. Administrators of the web UI stay local.
+- **Safe with your lockout policy**: Authway Server stops asking Active Directory after a few wrong passwords from
+  other networks, so a copied configuration file can't lock a user out of Windows.
+
+Setting it up: [Active Directory](active-directory.md).
+
 ## Not yet
 
 These may come next:
 
-- LDAP or Active Directory users.
+- Other LDAP directories, such as OpenLDAP.
 - Device keys in the TPM or the Secure Enclave, which not even an administrator of the computer can copy.
