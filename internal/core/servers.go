@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -249,6 +250,10 @@ func (s *Service) UpdateServer(by Actor, id int64, input ServerInput) (*ServerVi
 	if c := serverChanges(&before, server, serverNames(servers)); len(c) > 0 {
 		s.changeLocked(by, store.Event{Kind: "server_changed", ServerName: server.Name, Detail: c.String()})
 	}
+	// the addresses its peers learned for their names were inside the networks of before
+	if !slices.Equal(before.Networks, server.Networks) || before.Network6 != server.Network6 || !server.Enabled {
+		s.forgetServerLearnedLocked(&before)
+	}
 	bound := server.DeviceBinding && !before.DeviceBinding
 	if !server.Enabled || server.AuthMode != before.AuthMode || bound {
 		// the peers log in again under the new rules: with device binding, from their device
@@ -304,6 +309,9 @@ func (s *Service) DeleteServer(by Actor, id int64) error {
 	}
 	if err := s.db.Q().DeleteServer(id); err != nil {
 		return notFound(err)
+	}
+	for _, peer := range peers {
+		delete(s.learned, peer.ID)
 	}
 	// the other servers no longer reach it
 	if servers, err := s.db.Q().Servers(); err == nil {

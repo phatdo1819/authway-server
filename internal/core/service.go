@@ -137,6 +137,10 @@ type Options struct {
 	// where the web requests and the DNS queries of the peers that aren't logged in are redirected
 	RedirectPort int
 	DNSPort      int
+	// where the DNS queries of the peers with names in their access rules go, once they're logged in, and the port of
+	// the DNS servers they're sent on to: 53, another in the tests
+	ResolverPort int
+	UpstreamPort int
 	// the public name or address of this server, the default for new WireGuard servers
 	PublicHost string
 	// the version of Authway Server, written in the backups
@@ -208,6 +212,8 @@ type Service struct {
 	directoryStatus DirectoryStatus
 	directorySynced time.Time
 	directoryWake   chan struct{}
+	// the addresses the peers with names learned from their DNS answers, by peer: see names.go
+	learned map[int64]*learnedPeer
 }
 
 // New ends the sessions that can't go on and applies the configuration.
@@ -226,6 +232,12 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 	}
 	if opts.DNSPort == 0 {
 		opts.DNSPort = 8153
+	}
+	if opts.ResolverPort == 0 {
+		opts.ResolverPort = DefaultResolverPort
+	}
+	if opts.UpstreamPort == 0 {
+		opts.UpstreamPort = 53
 	}
 	if opts.After == nil {
 		opts.After = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
@@ -248,6 +260,7 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 		after:          opts.After,
 		counters:       map[int64]peerCounters{},
 		directoryWake:  make(chan struct{}, 1),
+		learned:        map[int64]*learnedPeer{},
 	}
 	if opts.HostRoutes != "" {
 		s.hostReader = hostroute.NewReader(opts.HostRoutes)
@@ -305,7 +318,8 @@ func (s *Service) applyLocked() {
 
 func (s *Service) stateLocked() (network.State, error) {
 	q := s.db.Q()
-	state := network.State{LoginPort: s.opts.LoginPort, RedirectPort: s.opts.RedirectPort, DNSPort: s.opts.DNSPort}
+	state := network.State{LoginPort: s.opts.LoginPort, RedirectPort: s.opts.RedirectPort, DNSPort: s.opts.DNSPort,
+		ResolverPort: s.opts.ResolverPort}
 	servers, err := q.Servers()
 	if err != nil {
 		return state, err
@@ -388,9 +402,15 @@ func (s *Service) stateLocked() (network.State, error) {
 			}
 			// invalid without an IPv6 network
 			other, _ := address6(tunnel.Masked(), tunnel6, address)
+			// names in its rules: the addresses they had in its DNS answers
+			named := hasNames(peer.Access)
+			var learned []netip.Addr
+			if named {
+				learned = s.learnedLocked(peer.ID)
+			}
 			entry.Peers = append(entry.Peers, network.Peer{
 				PublicKey: public, PresharedKey: preshared, Address: address, Address6: other, RouteAll: peer.RouteAll,
-				Access: peerAccess(&peer, entry.Networks),
+				Access: peerAccess(&peer, entry.Networks), Names: named, Learned: learned,
 			})
 		}
 		for _, session := range sessions {

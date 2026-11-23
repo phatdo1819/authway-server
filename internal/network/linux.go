@@ -265,6 +265,65 @@ func (l *Linux) RemoveSession(iface string, addresses ...netip.Addr) error {
 	return errors.Join(errs...)
 }
 
+// AddLearned adds learned addresses to the sets of their version: one nftables transaction.
+func (l *Linux) AddLearned(iface string, learned ...Learned) error {
+	var script strings.Builder
+	for _, entry := range learned {
+		script.WriteString(LearnedCommand(true, iface, entry) + "\n")
+	}
+	if script.Len() == 0 {
+		return nil
+	}
+	return run(script.String(), "nft", "-f", "-")
+}
+
+// RemoveLearned removes learned addresses in one transaction, or one by one when one of them is already gone.
+func (l *Linux) RemoveLearned(iface string, learned ...Learned) error {
+	var script strings.Builder
+	for _, entry := range learned {
+		script.WriteString(LearnedCommand(false, iface, entry) + "\n")
+	}
+	if script.Len() == 0 || run(script.String(), "nft", "-f", "-") == nil {
+		return nil
+	}
+	var errs []error
+	for _, entry := range learned {
+		err := run(LearnedCommand(false, iface, entry)+"\n", "nft", "-f", "-")
+		if err != nil && !strings.Contains(err.Error(), "No such file or directory") {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ForgetLearned deletes the conntrack entries of the connections of peers marked by a learned address, of all the
+// peers without addresses: the next packet goes through the rules of now.
+func (l *Linux) ForgetLearned(addresses ...netip.Addr) error {
+	if _, err := exec.LookPath("conntrack"); err != nil {
+		return nil
+	}
+	mark := fmt.Sprintf("0x%08x", LearnedMark)
+	var commands [][]string
+	for _, address := range addresses {
+		family := "ipv4"
+		if address.Is6() {
+			family = "ipv6"
+		}
+		commands = append(commands, []string{"-D", "-f", family, "-s", address.String(), "-m", mark})
+	}
+	if len(addresses) == 0 {
+		commands = [][]string{{"-D", "-f", "ipv4", "-m", mark}, {"-D", "-f", "ipv6", "-m", mark}}
+	}
+	var errs []error
+	for _, args := range commands {
+		// conntrack fails when it deletes nothing
+		if err := run("", "conntrack", args...); err != nil && !strings.Contains(err.Error(), "0 flow entries") {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (l *Linux) FlushRedirected(addresses ...netip.Addr) error {
 	if _, err := exec.LookPath("conntrack"); err != nil {
 		// without it, the redirected flows end with their conntrack timeouts: a few seconds for DNS

@@ -158,6 +158,7 @@ func (s *Service) forgetPeerLocked(id int64) {
 	delete(s.copies, id)
 	delete(s.mismatches, id)
 	delete(s.counters, id)
+	delete(s.learned, id)
 }
 
 func (l *loginFailures) prune(now time.Time) {

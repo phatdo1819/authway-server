@@ -32,6 +32,79 @@ func routeAllSet6(iface string) string {
 	return iface + "_route_all6"
 }
 
+// LearnedSet is the set of the addresses that the peers with names in their access rules learned from DNS, as
+// "peer . address", on an interface: IPv4, or IPv6 with ipv6. Only on a server with such peers.
+func LearnedSet(iface string, ipv6 bool) string {
+	if ipv6 {
+		return iface + "_learned6"
+	}
+	return iface + "_learned"
+}
+
+// sessionSetOf is the set of the peers logged in, of a version
+func sessionSetOf(iface string, ipv6 bool) string {
+	if ipv6 {
+		return SessionSet6(iface)
+	}
+	return SessionSet(iface)
+}
+
+// namePeers are the addresses of a version of the peers of a server with names in their access rules, for a set of
+// nftables: "" without any
+func namePeers(server Server, ipv6 bool) string {
+	var list []netip.Addr
+	for _, peer := range server.Peers {
+		if peer.Names {
+			list = append(list, peer.Address, peer.Address6)
+		}
+	}
+	return addresses(list, ipv6)
+}
+
+// hasNames tells whether a server has peers with names in their access rules
+func hasNames(server Server) bool {
+	for _, peer := range server.Peers {
+		if peer.Names {
+			return true
+		}
+	}
+	return false
+}
+
+// learnedElements are the elements of the set of the learned addresses of a version: "peer . address"
+func learnedElements(server Server, ipv6 bool) string {
+	family := ipFamily{"ip", ipv6}
+	var elements []string
+	seen := map[string]bool{}
+	for _, peer := range server.Peers {
+		key := family.address(peer)
+		if !peer.Names || !key.IsValid() || key.Is6() != ipv6 {
+			continue
+		}
+		for _, address := range peer.Learned {
+			if !address.IsValid() || address.Is6() != ipv6 || address.Is4In6() {
+				continue
+			}
+			element := key.String() + " . " + address.String()
+			if !seen[element] {
+				seen[element] = true
+				elements = append(elements, element)
+			}
+		}
+	}
+	return strings.Join(elements, ", ")
+}
+
+// LearnedCommand returns the nftables command that adds or removes a learned address of a peer
+func LearnedCommand(add bool, iface string, learned Learned) string {
+	verb := "delete"
+	if add {
+		verb = "add"
+	}
+	return fmt.Sprintf("%s element inet %s %s { %s . %s }", verb, Table, LearnedSet(iface, learned.Address.Is6()),
+		learned.Peer, learned.Address)
+}
+
 // Ruleset returns the nftables script that replaces the table at once: the old rules stay until the new ones are
 // all in, so there is never a moment without the gate. The sessions are in the script, so they stay too.
 //
@@ -56,10 +129,13 @@ func Ruleset(state State) string {
 		}
 		line(1, "}")
 	}
-	redirecting := false
+	redirecting, resolving := false, false
 	for _, server := range state.Servers {
 		if server.Gated && server.Redirect {
 			redirecting = true
+		}
+		if state.ResolverPort > 0 && hasNames(server) {
+			resolving = true
 		}
 	}
 
@@ -82,18 +158,25 @@ func Ruleset(state State) string {
 		if server.IPv6() {
 			set(routeAllSet6(server.Interface), "ipv6_addr", addresses(routeAll, true))
 		}
+		if hasNames(server) {
+			set(LearnedSet(server.Interface, false), "ipv4_addr . ipv4_addr", learnedElements(server, false))
+			if server.IPv6() {
+				set(LearnedSet(server.Interface, true), "ipv6_addr . ipv6_addr", learnedElements(server, true))
+			}
+		}
 	}
 
 	// to the server itself
 	line(1, "chain input {")
 	line(2, "type filter hook input priority filter; policy accept;")
 	line(2, `iifname "wg*" jump from_peers`)
-	// the login page and the redirects only through the tunnels, even when no server redirects: they listen anyway
-	if ports := portList(state.LoginPort, state.RedirectPort); ports != "" {
+	// the login page, the redirects and the DNS of the peers with names only through the tunnels, even when no server
+	// uses them: they listen anyway
+	if ports := portList(state.LoginPort, state.RedirectPort, state.ResolverPort); ports != "" {
 		line(2, "tcp dport %s drop", ports)
 	}
-	if state.DNSPort > 0 {
-		line(2, "udp dport %d drop", state.DNSPort)
+	if ports := portList(state.DNSPort, state.ResolverPort); ports != "" {
+		line(2, "udp dport %s drop", ports)
 	}
 	line(1, "}")
 	line(1, "chain from_peers {")
@@ -115,14 +198,24 @@ func Ruleset(state State) string {
 				line(2, "iifname %q ip6 daddr %s udp dport %d accept", server.Interface, address6, state.DNSPort)
 			}
 		}
+		// the DNS queries of the peers with names, redirected to the server once they're logged in
+		if state.ResolverPort > 0 {
+			for _, family := range families(server) {
+				if peers := namePeers(server, family.ipv6); peers != "" {
+					line(2, "iifname %q %s saddr { %s }%s %s daddr %s meta l4proto { tcp, udp } th dport %d accept", server.Interface,
+						family.name, peers, loggedIn(server, family), family.name, ownAddress(server, family), state.ResolverPort)
+				}
+			}
+		}
 	}
 	// a quick answer rather than a timeout: the apps of the peer see at once that nothing is there
 	line(2, "meta l4proto tcp reject with tcp reset")
 	line(2, "reject with icmpx type admin-prohibited")
 	line(1, "}")
 
-	// before the routing: the redirects of the peers that aren't logged in
-	if redirecting {
+	// before the routing: the redirects of the peers that aren't logged in, and the DNS queries of the peers with names
+	// that are, to any server, to Authway Server
+	if redirecting || resolving {
 		line(1, "chain prerouting {")
 		line(2, "type nat hook prerouting priority dstnat; policy accept;")
 		for _, server := range state.Servers {
@@ -136,6 +229,18 @@ func Ruleset(state State) string {
 			for _, unauth := range unauthorized {
 				line(2, "%s udp dport 53 limit rate %d/second redirect to :%d", unauth, DNSRate, state.DNSPort)
 				line(2, "%s tcp dport 80 redirect to :%d", unauth, state.RedirectPort)
+			}
+		}
+		for _, server := range state.Servers {
+			if state.ResolverPort == 0 {
+				break
+			}
+			for _, family := range families(server) {
+				if peers := namePeers(server, family.ipv6); peers != "" {
+					match := fmt.Sprintf("iifname %q %s saddr { %s }%s", server.Interface, family.name, peers, loggedIn(server, family))
+					line(2, "%s udp dport 53 redirect to :%d", match, state.ResolverPort)
+					line(2, "%s tcp dport 53 redirect to :%d", match, state.ResolverPort)
+				}
 			}
 		}
 		line(1, "}")
@@ -182,6 +287,11 @@ func Ruleset(state State) string {
 						line(2, `iifname != "wg*" oifname %q ct direction original %s daddr %s %s saddr { %s } accept`,
 							server.Interface, family.name, address, family.name, networks)
 					}
+				}
+				// and from the addresses its names had
+				if namePeers(server, family.ipv6) != "" {
+					line(2, `iifname != "wg*" oifname %q ct direction original %s daddr . %s saddr @%s accept`,
+						server.Interface, family.name, family.name, LearnedSet(server.Interface, family.ipv6))
 				}
 				if peers := addresses(limited, family.ipv6); peers != "" {
 					line(2, "oifname %q ct direction original %s daddr { %s } drop", server.Interface, family.name, peers)
@@ -302,6 +412,22 @@ func families(server Server) []ipFamily {
 	return []ipFamily{{"ip", false}}
 }
 
+// loggedIn is the match of the peers logged in, on a server with a login: "" without one
+func loggedIn(server Server, family ipFamily) string {
+	if !server.Gated {
+		return ""
+	}
+	return fmt.Sprintf(" %s saddr @%s", family.name, sessionSetOf(server.Interface, family.ipv6))
+}
+
+// ownAddress is the address of the server in its tunnel, of a version
+func ownAddress(server Server, family ipFamily) netip.Addr {
+	if family.ipv6 {
+		return server.Address6.Addr()
+	}
+	return server.Address.Addr()
+}
+
 // limitedRules are the rules of the peers with access rules, in the chain of their server before the ones of all its
 // peers: their own networks, the DNS servers of the server, and nothing else of the networks of the server nor of
 // the private networks. What's left, the internet, follows the rules of all the peers: only with RouteAll.
@@ -321,6 +447,13 @@ func limitedRules(server Server, line func(int, string, ...any)) {
 		peers := addresses(limited, family.ipv6)
 		if peers == "" {
 			continue
+		}
+		// the addresses learned for the names: a connection opened to one is marked, and stays open once the address
+		// expires
+		if names := namePeers(server, family.ipv6); names != "" {
+			line(2, "%s saddr . %s daddr @%s ct mark set 0x%08x accept", family.name, family.name,
+				LearnedSet(server.Interface, family.ipv6), LearnedMark)
+			line(2, "%s saddr { %s } ct mark 0x%08x accept", family.name, names, LearnedMark)
 		}
 		// the peers ask the DNS servers of the configuration file, wherever they are
 		if dns := addresses(server.DNS, family.ipv6); dns != "" {

@@ -57,7 +57,8 @@ server can add more:
   addresses: the file server for one user, the printer for another. The firewall of the server enforces them, with
   NAT and routed alike, whatever the configuration file says. With all its traffic through the tunnel, such a peer
   reaches the internet too, but no other private network. On a server with login each user has one peer, so these
-  are the access rules of the user.
+  are the access rules of the user. A rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under
+  it: the server learns their addresses from the DNS answers of the peer.
 - **NAT or routed**, for each server: its networks see the address of the host, with nothing to set up, or the address
   of each peer, for their logs and firewall rules. Routed, they can also start connections to the peers logged in.
   See [Routed servers](routed-servers.md).

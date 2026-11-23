@@ -38,10 +38,10 @@
 - **The log of the container** keeps 3 files of 10 MB at most (`logging` in compose.yaml). The latest lines are also
   on the **System** page, in its **Log** tab.
 - **The version** is at the bottom of the menu and on the System page: the one of the source, or what you give at
-  the build to tell builds apart: `AUTHWAY_VERSION=0.3.2+$(git rev-parse --short HEAD) docker compose build`.
+  the build to tell builds apart: `AUTHWAY_VERSION=0.4.0+$(git rev-parse --short HEAD) docker compose build`.
 - **A published image**: `.github/workflows/image.yml` builds the image for amd64 and arm64 and publishes it on the
   GitHub Container Registry of the repository at each tag `v<version>` (the version of `cmd/authway-server/main.go`).
-  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.3.2`.
+  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.4.0`.
 - **The certificate of the web UI**: the self-signed one is valid 2 years and made again 30 days before its end (the
   browsers then warn once more). Your own `data/tls/cert.pem` and `data/tls/key.pem` are loaded within a minute,
   without a restart; a pair that doesn't load leaves the one before in use. Yours is never replaced: the System page
@@ -89,6 +89,13 @@
   DNS servers of the server, wherever they are, on port 53 only; its configuration file routes its networks and those
   DNS servers, so download it again after a change, unless it sends all its traffic. The server can't drop a network
   that a peer still reaches part of: change the peer first. The traffic between peers doesn't depend on them.
+- **Names in the access rules**: a rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under
+  `corp.lan`. The peer then uses Authway Server as its DNS server (download its configuration file again), which asks
+  the DNS servers of the server; each answer for one of its names lets it reach the addresses given, inside the
+  networks of the server, for as long as the answer holds and 10 minutes more. Connections opened meanwhile stay
+  open; new ones need a new answer, which the device asks for by itself. A device that uses DNS over HTTPS, as some
+  browsers do, asks another way: those names stay blocked. A wildcard covers every name under it, including the ones
+  users can create, as in Active Directory's DNS by default: use exact names for the hosts that matter.
 - **Import**: **Users > Import** reads a CSV file, from a spreadsheet saved as *CSV UTF-8*, with a header that names
   its columns in any order: `username`, `full_name` and `password`, the last two optional. Each row adds a user, as
   **Add user** does. An import never changes a user: a username already there stops the import, or, with **Skip the

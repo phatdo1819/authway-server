@@ -30,15 +30,29 @@ const accessModes = [
   { value: false, label: "All of the server's networks" },
   { value: true, label: 'Only some of them' },
 ]
+// a name, files.corp.lan or *.corp.lan: neither an IPv4 address or network (digits, dots and a slash) nor an IPv6 one
+function isName(entry: string): boolean {
+  const text = entry.trim()
+  return text !== '' && !text.includes(':') && !/^[\d./]+$/.test(text)
+}
+const typedNames = computed(() => limited.value && access.value.some(isName))
 const accessHelp = computed(() => {
-  const help = `Addresses or networks inside ${serverNetworks.value}. A single address means just that one device. The peer still uses the server's DNS servers.`
+  let help = `Addresses, networks or names inside ${serverNetworks.value}. A single address means just that one device. A name such as files.corp.lan, or *.corp.lan for every name under corp.lan, covers the addresses that DNS gives for it.`
+  help += typedNames.value ? ' With a name, the peer uses Authway Server as its DNS server.' : " The peer still uses the server's DNS servers."
   return form.value.route_all ? `${help} Since all its traffic goes through the VPN, it can also reach the internet, but no other private networks.` : help
 })
+const accessError = computed(() =>
+  errors.value.access === 'invalid'
+    ? 'Enter addresses, networks, or names such as files.corp.lan or *.corp.lan.'
+    : fieldMessage(errors.value.access),
+)
 const accessChanges = computed(() => {
   const before = props.peer?.access ?? []
   const after = limited.value ? access.value.map((entry) => entry.trim()).filter(Boolean) : []
   return before.join(',') !== after.join(',')
 })
+// names change the DNS server of the file, whatever traffic goes through the VPN
+const namesChange = computed(() => (props.peer?.access ?? []).some(isName) !== typedNames.value)
 
 const gated = computed(() => props.server.auth_mode !== 'key')
 // another administrator saving this peer meanwhile
@@ -86,7 +100,9 @@ const networkFull = computed(
 )
 // the routes of the file: all the traffic, or the networks it reaches
 const changesFile = computed(
-  () => props.peer !== null && (props.peer.route_all !== form.value.route_all || (!form.value.route_all && accessChanges.value)),
+  () =>
+    props.peer !== null &&
+    (props.peer.route_all !== form.value.route_all || (!form.value.route_all && accessChanges.value) || namesChange.value),
 )
 // on a server with an IPv6 network, the IPv6 address that comes with the IPv4 one typed
 const addressHelp = computed(() => {
@@ -225,10 +241,10 @@ async function save() {
         <UiListInput
           v-if="limited"
           v-model="access"
-          label="Addresses and networks"
-          placeholder="192.168.1.10"
-          add-label="Add address or network"
-          :error="fieldMessage(errors.access)"
+          label="Addresses, networks and names"
+          placeholder="192.168.1.10 or files.corp.lan"
+          add-label="Add address, network or name"
+          :error="accessError"
           :helper="accessHelp"
         />
       </fieldset>

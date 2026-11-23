@@ -58,6 +58,7 @@ func (s *Service) Tick() {
 		}
 	}
 	s.challenges.prune(now)
+	s.pruneLearnedLocked(now)
 	for peer, at := range s.mismatches {
 		if now.Sub(at) > CopyReportInterval {
 			delete(s.mismatches, peer)

@@ -33,8 +33,8 @@ import (
 	"github.com/phatdo1819/authway-server/internal/system"
 )
 
-// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.3.2+abc1234"
-var version = "0.3.2"
+// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.4.0+abc1234"
+var version = "0.4.0"
 
 type config struct {
 	data          string
@@ -45,6 +45,7 @@ type config struct {
 	loginPort     int
 	redirectPort  int
 	dnsPort       int
+	resolverPort  int
 	publicHost    string
 	logLevel      string
 	fakeNetwork   bool
@@ -86,6 +87,7 @@ func parseConfig(args []string) (config, bool, error) {
 	flags.IntVar(&c.loginPort, "login-port", envInt("AUTHWAY_LOGIN_PORT", 8181), "the port of the login page on the address of each server (AUTHWAY_LOGIN_PORT)")
 	flags.IntVar(&c.redirectPort, "redirect-port", envInt("AUTHWAY_REDIRECT_PORT", 8180), "where the web requests of the peers not logged in are redirected (AUTHWAY_REDIRECT_PORT)")
 	flags.IntVar(&c.dnsPort, "dns-port", envInt("AUTHWAY_DNS_PORT", 8153), "where the DNS queries of the peers not logged in are redirected (AUTHWAY_DNS_PORT)")
+	flags.IntVar(&c.resolverPort, "resolver-port", envInt("AUTHWAY_RESOLVER_PORT", 8154), "where the DNS queries of the peers with names in their access rules go once they are logged in (AUTHWAY_RESOLVER_PORT)")
 	flags.StringVar(&c.publicHost, "public-host", env("AUTHWAY_PUBLIC_HOST", ""), "the public name or IP of this server, the default for new WireGuard servers (AUTHWAY_PUBLIC_HOST)")
 	flags.StringVar(&c.logLevel, "log-level", env("AUTHWAY_LOG_LEVEL", "info"), "debug, info, warn or error (AUTHWAY_LOG_LEVEL)")
 	flags.StringVar(&c.hostRoutes, "host-routes", env("AUTHWAY_HOST_ROUTES", ""), "the folder shared with the helper of compose.host-routes.yaml, which routes the tunnels of the routed servers through the Docker host (AUTHWAY_HOST_ROUTES)")
@@ -108,14 +110,14 @@ func parseConfig(args []string) (config, bool, error) {
 	c.adminPassword = os.Getenv("AUTHWAY_ADMIN_PASSWORD")
 	os.Unsetenv("AUTHWAY_ADMIN_PASSWORD")
 	ports := map[int]bool{}
-	for _, port := range []int{c.loginPort, c.redirectPort, c.dnsPort} {
+	for _, port := range []int{c.loginPort, c.redirectPort, c.dnsPort, c.resolverPort} {
 		if port < 1 || port > 65535 {
 			return c, false, errors.New("the ports must be between 1 and 65535")
 		}
 		ports[port] = true
 	}
-	if len(ports) != 3 {
-		return c, false, errors.New("the login, redirect and DNS ports must differ")
+	if len(ports) != 4 {
+		return c, false, errors.New("the login, redirect, DNS and resolver ports must differ")
 	}
 	if c.devPeer != "" && !c.fakeNetwork {
 		return c, false, errors.New("-dev-peer works only with -fake-network")
@@ -345,7 +347,7 @@ func run(args []string) int {
 		}
 	}
 	service, err := core.New(db, net, core.Options{
-		LoginPort: c.loginPort, RedirectPort: c.redirectPort, DNSPort: c.dnsPort, PublicHost: c.publicHost,
+		LoginPort: c.loginPort, RedirectPort: c.redirectPort, DNSPort: c.dnsPort, ResolverPort: c.resolverPort, PublicHost: c.publicHost,
 		Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes, Directory: directory.LDAP{},
 	})
 	if err != nil {
@@ -388,6 +390,7 @@ func run(args []string) int {
 	loginAddress := host + ":" + strconv.Itoa(c.loginPort)
 	redirectAddress := host + ":" + strconv.Itoa(c.redirectPort)
 	dnsAddress := host + ":" + strconv.Itoa(c.dnsPort)
+	resolverAddress := host + ":" + strconv.Itoa(c.resolverPort)
 	pages := portal.New(service, portal.Options{Log: log, DevPeer: devPeer})
 	loginServer := &http.Server{
 		Addr:              loginAddress,
@@ -422,7 +425,7 @@ func run(args []string) int {
 		go certs.Run(ctx)
 	}
 
-	errs := make(chan error, 4)
+	errs := make(chan error, 5)
 	go func() {
 		log.Info("login page listening", "address", loginAddress)
 		errs <- fmt.Errorf("login page: %w", loginServer.ListenAndServe())
@@ -433,6 +436,11 @@ func run(args []string) int {
 	go func() {
 		if err := pages.ServeDNS(ctx, dnsAddress); err != nil {
 			errs <- fmt.Errorf("DNS answers: %w", err)
+		}
+	}()
+	go func() {
+		if err := pages.ServeResolver(ctx, resolverAddress); err != nil {
+			errs <- fmt.Errorf("DNS of the peers with names: %w", err)
 		}
 	}()
 	go func() {

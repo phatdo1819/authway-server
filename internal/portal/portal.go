@@ -35,6 +35,8 @@ type Portal struct {
 	limiter *limiter
 	// the status is asked more often, by the page and the apps that wait for the login
 	statusLimiter *limiter
+	// the DNS queries of the peers with names, much more often: a page asks for many names
+	resolverLimiter *limiter
 }
 
 func New(service *core.Service, options Options) *Portal {
@@ -43,10 +45,12 @@ func New(service *core.Service, options Options) *Portal {
 	}
 	// 30 requests a minute for each address, 10 at once, for the login, the logout and the device key together: it
 	// only stops floods, the failed logins are counted by the core for each public IP. The status, which reads
-	// WireGuard under the lock of the core, 120 a minute, 20 at once
+	// WireGuard under the lock of the core, 120 a minute, 20 at once. The DNS queries of the peers with names, 100 a
+	// second, 300 at once
 	return &Portal{
 		core: service, log: options.Log, devPeer: options.DevPeer,
 		limiter: newLimiter(30, time.Minute, 10), statusLimiter: newLimiter(120, time.Minute, 20),
+		resolverLimiter: newLimiter(6000, time.Minute, 300),
 	}
 }
 

@@ -391,6 +391,50 @@ The configuration file of a peer with rules that doesn't send all its traffic ro
 of the server that are inside the networks of the server but not inside its rules, instead of the networks of the
 server.
 
+### Names in the access rules
+
+A rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under `corp.lan` at any depth (not
+`corp.lan` itself): `internal/names`, letters, digits, hyphens and underscores, two labels at least for a name alone,
+kept in lowercase in `peers.access` with the other rules (no schema change; an older version skips them, so the peer
+reaches less, never more). A server without networks refuses them (`outside`). The addresses of a name aren't known in
+advance, so they're learned from the DNS answers of the peer:
+
+- **Its DNS goes to Authway Server.** Its configuration file has `DNS = <the server's address>` (and the IPv6 one),
+  and routes all the networks of the server, as without rules: the firewall does the narrowing. Once it's logged in
+  (always, on a server without a login), `prerouting` redirects its UDP and TCP port 53, to any address, to
+  `-resolver-port` (8154, `AUTHWAY_RESOLVER_PORT`), so an older file or an app with its own DNS server works too, as
+  long as the query goes through the tunnel; `input` accepts that port from those peers only, and drops it from
+  outside the tunnels.
+- **The resolver** (`internal/portal/resolver.go`) sends each query on to the DNS servers of the server (the server's
+  own addresses left out), or the ones of `/etc/resolv.conf` when it has none, over the protocol it came with, 3
+  seconds each, and answers `SERVFAIL` when none answers. 100 queries a second for each peer, 300 at once, 256 under
+  way in all. It answers only an enabled, unblocked peer with names, logged in on a server with a login.
+- **Learning** (`core.Learn`, before the answer goes back, so the device connects at once): for a question that
+  matches a rule of the peer, the A and AAAA records of the name, through the CNAME chain of the answer, inside the
+  networks of the server and of a version its tunnel carries. Each one stays for the shortest time to live on its way,
+  plus `LearnedMargin` (10 minutes), a day at most; a new answer extends it. 1024 addresses per peer at most. They're
+  kept in memory, written in each ruleset, and added (`add element`) or removed at the `Tick` after they expire
+  (`delete element`) between two.
+- **The firewall**, for a server with such peers: the sets `<wg>_learned` (`ipv4_addr . ipv4_addr`) and
+  `<wg>_learned6`, of `peer . address`; in the chain of the server, before the drops of the peers with rules:
+
+  ```
+  ip saddr . ip daddr @<wg>_learned ct mark set 0x00415701 accept
+  ip saddr { <peers with names> } ct mark 0x00415701 accept
+  ```
+
+  so a connection opened while the address was learned stays open after it expires, as long as the session does.
+  With `inbound`, `ip daddr . ip saddr @<wg>_learned` also lets those addresses start connections to the peer.
+- **Changes**: when the rules of a peer with names change, it's disabled or gets another user, or the networks of its
+  server change, what it learned is forgotten and its marked connections are deleted from conntrack
+  (`conntrack -D -s <peer> -m 0x00415701`), so the next packet goes through the rules of now; a restore deletes
+  them all. A new or deleted peer, and new keys, forget too.
+
+What this can't do: names whose addresses are outside the networks of the server (the internet, for a peer that sends
+all its traffic, follows the other rules: open with `route_all`); queries the device sends another way (DNS over
+HTTPS or TLS): their names aren't learned, so they're blocked, not let through. A wildcard covers every name that can
+be created under it: in Active Directory, any user can register one by default. Backups of version 7 have them.
+
 ## Connection history
 
 WireGuard has no connections and no hooks when a peer comes or goes. Every minute (`RecordInterval`) the server reads
@@ -661,7 +705,7 @@ their peers, and their ids. Not the history of the sessions and of the connectio
 certificate of the web UI, or the count of the changes (`version`, `updated_by`): it starts again at 1, and the
 restore logs every administrator out, their forms with them. The content is JSON with its own version (`BackupVersion`, 2 since the devices, 3 since the
 IPv6 networks, 4 since the routed servers, 5 since the access rules of the peers, 6 since Active Directory and its
-users); a restore takes that version and
+users, 7 since the names in the access rules); a restore takes that version and
 the older ones, and refuses a newer one: an older Authway Server refuses a backup with IPv6 networks rather than lose
 them, with routed servers rather than translate them, or with access rules rather than open all the networks to the
 peers. A backup of version 1 has no device: the peers of the servers with binding enroll one at their next login. One
@@ -747,7 +791,7 @@ errors, `?level=all` every line, the newest first.
   netlink in the network of the container), sets `no-new-privileges` and a read-only root with a `/tmp` in memory.
   The process is root without the rights of root: it reads and writes only what root owns, which is everything in
   `/data` when Docker makes the folder. The ports are above 1024 (the DNS and HTTP redirects reach 8153 and 8180
-  through nftables), so `NET_BIND_SERVICE` isn't needed either.
+  through nftables, the DNS of the peers with names 8154), so `NET_BIND_SERVICE` isn't needed either.
 - **Network**: the sysctls `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding`, and IPv6 on the Docker network
   (`enable_ipv6`): see [IPv6](#ipv6). Changing the network needs `docker compose down`, then `up -d`. For routed
   servers, `compose.host-routes.yaml` adds the helper of the Docker host, or `compose.macvlan.yaml` puts the container

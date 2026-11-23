@@ -23,7 +23,8 @@ import (
 // with their keys, password hashes and authenticator secrets, sealed with a passphrase (internal/backup). The
 // history of the sessions, the events and the alerts aren't in it.
 
-// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 6 added
+// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 7 added
+// the names in the access rules of the peers: an older Authway Server would refuse them. 6 added
 // the users of Active Directory and its settings: an older Authway Server would refuse their users without a password
 // hash. 5 added the access rules of the peers: an older Authway Server would let them reach all the networks of their
 // server. 4 added
@@ -31,7 +32,7 @@ import (
 // the servers: an older Authway Server refuses the backup rather than lose them. 2 added
 // the devices, device binding and the traffic between peers: a backup of version 1 has neither, its peers enroll
 // a device when their server asks for one.
-const BackupVersion = 6
+const BackupVersion = 7
 
 var interfacePattern = regexp.MustCompile(`^wg[0-9]{1,3}$`)
 
@@ -497,6 +498,11 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 	s.challenges = challenges{}
 	s.mismatches = map[int64]time.Time{}
 	s.counters = map[int64]peerCounters{}
+	// the addresses learned for names, and the connections opened to them: of other peers, maybe
+	s.learned = map[int64]*learnedPeer{}
+	if err := s.net.ForgetLearned(); err != nil {
+		s.log.Warn("can't close the connections to the addresses of names", "error", err)
+	}
 	// the directory of the backup, maybe another one: synced again at once
 	s.directoryStatus, s.directorySynced = DirectoryStatus{}, time.Time{}
 	select {

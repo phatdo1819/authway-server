@@ -2,6 +2,7 @@ package core
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -135,6 +136,10 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	if !peer.Enabled || peer.UserID != before.UserID {
 		s.endSessionsLocked(func(session store.Session) bool { return session.PeerID == id }, EndPeerChanged)
 	}
+	// what its names opened no longer holds: the connections it opened to those addresses close too
+	if hasNames(before.Access) && (!slices.Equal(before.Access, peer.Access) || !peer.Enabled || peer.UserID != before.UserID) {
+		s.forgetLearnedLocked(server, &before)
+	}
 	if peer.UserID != before.UserID {
 		s.forgetPeerLocked(id)
 		// the device of another user: the new user enrolls a device of their own
@@ -165,6 +170,7 @@ func (s *Service) DeletePeer(by Actor, id int64) error {
 		return notFound(err)
 	}
 	delete(s.counters, id)
+	delete(s.learned, id)
 	s.log.Info("peer deleted", "peer", peer.Name, "address", peer.Address)
 	s.changeLocked(by, store.Event{Kind: "peer_deleted", ServerName: serverName, PeerName: peer.Name, Username: username,
 		Detail: peer.Address})
@@ -258,13 +264,21 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 	// invalid without an IPv6 network
 	other, _ := address6(tunnel.Masked(), tunnel6, address)
 	networks := append(allowedNetworks(server, peer), s.linkedNetworksLocked(server)...)
+	dns := server.DNS
+	if hasNames(peer.Access) {
+		// names in its rules: it asks Authway Server, which learns their addresses from the answers
+		dns = []string{serverAddress(tunnel.Masked()).String()}
+		if tunnel6.IsValid() {
+			dns = append(dns, serverAddress(tunnel6).String())
+		}
+	}
 	config := peerconf.Config{
 		PeerName:        peer.Name,
 		ServerName:      server.Name,
 		PrivateKey:      peer.PrivateKey,
 		Address:         address,
 		Address6:        other,
-		DNS:             server.DNS,
+		DNS:             dns,
 		MTU:             server.MTU,
 		ServerPublicKey: serverKey.PublicKey().String(),
 		PresharedKey:    peer.PresharedKey,

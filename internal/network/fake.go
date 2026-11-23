@@ -24,13 +24,17 @@ type Fake struct {
 	Applied    int
 	// the peers whose redirected connections were flushed
 	Flushed []netip.Addr
+	// the learned addresses, by interface, and the peers whose connections to them were closed
+	Learned   map[string]map[Learned]bool
+	Forgotten []netip.Addr
 	// see SetLive
 	Live      netip.Addr
 	liveSince time.Time
 }
 
 func NewFake() *Fake {
-	return &Fake{Sessions: map[string]map[netip.Addr]bool{}, Peers: map[wgtypes.Key]PeerStats{}}
+	return &Fake{Sessions: map[string]map[netip.Addr]bool{}, Peers: map[wgtypes.Key]PeerStats{},
+		Learned: map[string]map[Learned]bool{}}
 }
 
 func (f *Fake) Apply(state State) error {
@@ -43,14 +47,65 @@ func (f *Fake) Apply(state State) error {
 	}
 	f.State = state
 	f.Sessions = map[string]map[netip.Addr]bool{}
+	f.Learned = map[string]map[Learned]bool{}
 	for _, server := range state.Servers {
 		set := map[netip.Addr]bool{}
 		for _, address := range server.Sessions {
 			set[address] = true
 		}
 		f.Sessions[server.Interface] = set
+		learned := map[Learned]bool{}
+		for _, peer := range server.Peers {
+			for _, address := range peer.Learned {
+				key := peer.Address
+				if address.Is6() {
+					key = peer.Address6
+				}
+				learned[Learned{Peer: key, Address: address}] = true
+			}
+		}
+		f.Learned[server.Interface] = learned
 	}
 	return f.ApplyError
+}
+
+func (f *Fake) AddLearned(iface string, learned ...Learned) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Learned[iface] == nil {
+		f.Learned[iface] = map[Learned]bool{}
+	}
+	for _, entry := range learned {
+		f.Learned[iface][entry] = true
+	}
+	return nil
+}
+
+func (f *Fake) RemoveLearned(iface string, learned ...Learned) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, entry := range learned {
+		delete(f.Learned[iface], entry)
+	}
+	return nil
+}
+
+// ForgetLearned records the peers whose connections were closed; for all of them, an invalid address.
+func (f *Fake) ForgetLearned(addresses ...netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(addresses) == 0 {
+		addresses = []netip.Addr{{}}
+	}
+	f.Forgotten = append(f.Forgotten, addresses...)
+	return nil
+}
+
+// Reaches tells whether a peer reaches a learned address on an interface.
+func (f *Fake) Reaches(iface string, peer, address netip.Addr) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Learned[iface][Learned{Peer: peer, Address: address}]
 }
 
 func (f *Fake) AddSession(iface string, addresses ...netip.Addr) error {

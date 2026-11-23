@@ -402,3 +402,88 @@ func TestAccessRules(t *testing.T) {
 		t.Errorf("rules without peers with access rules:\n%s", rules)
 	}
 }
+
+// The peers with names in their access rules: their DNS queries go to Authway Server once they're logged in, and they
+// reach the addresses learned for them, on new connections; a connection opened then stays open.
+func TestNames(t *testing.T) {
+	addr, prefix := netip.MustParseAddr, netip.MustParsePrefix
+	state := State{
+		LoginPort: 8181, RedirectPort: 8180, DNSPort: 8153, ResolverPort: 8154,
+		Servers: []Server{{
+			Interface: "wg0", Gated: true, Redirect: true, Routed: true, Inbound: true,
+			Address: prefix("10.8.0.1/24"), Address6: prefix("fd00:1::1/64"),
+			Networks: []netip.Prefix{prefix("192.168.1.0/24"), prefix("fd00:5::/64")},
+			Peers: []Peer{
+				{Address: addr("10.8.0.2"), Address6: addr("fd00:1::2"), Access: []netip.Prefix{}, Names: true,
+					Learned: []netip.Addr{addr("192.168.1.10"), addr("fd00:5::10"), addr("192.168.1.10")}},
+				{Address: addr("10.8.0.3"), Address6: addr("fd00:1::3"), Access: []netip.Prefix{prefix("192.168.1.20/32")}},
+				{Address: addr("10.8.0.5"), Address6: addr("fd00:1::5"), Access: []netip.Prefix{prefix("192.168.1.30/32")},
+					Names: true, Learned: []netip.Addr{addr("192.168.1.11")}},
+			},
+		}, {
+			Interface: "wg1", Address: prefix("10.9.0.1/24"), Networks: []netip.Prefix{prefix("192.168.2.0/24")},
+			Peers: []Peer{{Address: addr("10.9.0.2"), Access: []netip.Prefix{}, Names: true}},
+		}, {
+			Interface: "wg2", Address: prefix("10.10.0.1/24"), Networks: []netip.Prefix{prefix("192.168.3.0/24")},
+			Peers: []Peer{{Address: addr("10.10.0.2"), Access: []netip.Prefix{prefix("192.168.3.5/32")}}},
+		}},
+	}
+	rules := Ruleset(state)
+	order := func(lines ...string) {
+		t.Helper()
+		at := -1
+		for _, line := range lines {
+			index := strings.Index(rules, line)
+			if index < 0 || index < at {
+				t.Fatalf("%q missing or out of order in:\n%s", line, rules)
+			}
+			at = index
+		}
+	}
+	order(
+		"set wg0_learned {\n\t\ttype ipv4_addr . ipv4_addr\n\t\telements = { 10.8.0.2 . 192.168.1.10, 10.8.0.5 . 192.168.1.11 }\n\t}",
+		"set wg0_learned6 {\n\t\ttype ipv6_addr . ipv6_addr\n\t\telements = { fd00:1::2 . fd00:5::10 }\n\t}",
+		// a server without IPv6, and nothing learned yet
+		"set wg1_learned {\n\t\ttype ipv4_addr . ipv4_addr\n\t}",
+		"tcp dport { 8181, 8180, 8154 } drop",
+		"udp dport { 8153, 8154 } drop",
+		`iifname "wg0" ip saddr { 10.8.0.2, 10.8.0.5 } ip saddr @wg0_sessions ip daddr 10.8.0.1 meta l4proto { tcp, udp } th dport 8154 accept`,
+		`iifname "wg0" ip6 saddr { fd00:1::2, fd00:1::5 } ip6 saddr @wg0_sessions6 ip6 daddr fd00:1::1 meta l4proto { tcp, udp } th dport 8154 accept`,
+		// without a login: always
+		`iifname "wg1" ip saddr { 10.9.0.2 } ip daddr 10.9.0.1 meta l4proto { tcp, udp } th dport 8154 accept`,
+		"meta l4proto tcp reject with tcp reset",
+		`iifname "wg0" ip saddr != @wg0_sessions udp dport 53 limit rate 100/second redirect to :8153`,
+		`iifname "wg0" ip saddr { 10.8.0.2, 10.8.0.5 } ip saddr @wg0_sessions udp dport 53 redirect to :8154`,
+		`iifname "wg0" ip saddr { 10.8.0.2, 10.8.0.5 } ip saddr @wg0_sessions tcp dport 53 redirect to :8154`,
+		`iifname "wg0" ip6 saddr { fd00:1::2, fd00:1::5 } ip6 saddr @wg0_sessions6 udp dport 53 redirect to :8154`,
+		`iifname "wg1" ip saddr { 10.9.0.2 } udp dport 53 redirect to :8154`,
+		// the connections from the networks: from the learned addresses too
+		`iifname != "wg*" oifname "wg0" ct direction original ip daddr 10.8.0.3 ip saddr { 192.168.1.20/32 } accept`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip daddr . ip saddr @wg0_learned accept`,
+		`oifname "wg0" ct direction original ip daddr { 10.8.0.2, 10.8.0.3, 10.8.0.5 } drop`,
+		`iifname != "wg*" oifname "wg0" ct direction original ip6 daddr . ip6 saddr @wg0_learned6 accept`,
+		// the chain of the server: the rules of the addresses, the learned ones, then the drops
+		"ip saddr 10.8.0.3 ip daddr { 192.168.1.20/32 } accept",
+		"ip saddr 10.8.0.5 ip daddr { 192.168.1.30/32 } accept",
+		"ip saddr . ip daddr @wg0_learned ct mark set 0x00415701 accept",
+		"ip saddr { 10.8.0.2, 10.8.0.5 } ct mark 0x00415701 accept",
+		"ip saddr { 10.8.0.2, 10.8.0.3, 10.8.0.5 } ip daddr { 192.168.1.0/24 } drop",
+		"ip6 saddr . ip6 daddr @wg0_learned6 ct mark set 0x00415701 accept",
+		"ip6 saddr { fd00:1::2, fd00:1::5 } ct mark 0x00415701 accept",
+		"ip6 saddr { fd00:1::2, fd00:1::3, fd00:1::5 } ip6 daddr { fd00:5::/64 } drop",
+		"ip saddr . ip daddr @wg1_learned ct mark set 0x00415701 accept",
+	)
+	// a server without names has none of it
+	if strings.Contains(rules, "wg2_learned") || strings.Contains(rules, `iifname "wg2" ip saddr { 10.10.0.2 }`) {
+		t.Errorf("names on wg2:\n%s", rules)
+	}
+	// without the port of the resolver, nothing goes there
+	state.ResolverPort = 0
+	if rules := Ruleset(state); strings.Contains(rules, "8154") || strings.Contains(rules, "redirect to :0") {
+		t.Errorf("no resolver:\n%s", rules)
+	}
+	if got := LearnedCommand(true, "wg0", Learned{Peer: addr("fd00:1::2"), Address: addr("fd00:5::10")}); got !=
+		"add element inet authway wg0_learned6 { fd00:1::2 . fd00:5::10 }" {
+		t.Errorf("command: %s", got)
+	}
+}

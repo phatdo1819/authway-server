@@ -17,6 +17,9 @@ type State struct {
 	// Redirect go to these ports, where Authway Server leads them to the login page
 	RedirectPort int
 	DNSPort      int
+	// the DNS queries (UDP and TCP 53) of the peers with names in their access rules go to this port, once they're
+	// logged in: Authway Server asks the DNS servers for them, and lets them reach the addresses of those names
+	ResolverPort int
 }
 
 type Server struct {
@@ -66,12 +69,27 @@ type Peer struct {
 	// the access rules: the networks the peer reaches, of both versions, inside Networks of its server; nil for all
 	// of them. With RouteAll, the peer also reaches the internet, but no other private network
 	Access []netip.Prefix
+	// names in the access rules: its DNS queries go to Authway Server, and it also reaches Learned, the addresses
+	// those names had in the answers, inside Networks of its server. Only with Access
+	Names   bool
+	Learned []netip.Addr
 }
 
 // Limited tells whether the peer has access rules.
 func (p Peer) Limited() bool {
 	return p.Access != nil
 }
+
+// Learned is an address that a peer reaches, learned from the answer to its DNS query for a name of its access rules:
+// Peer is one of its addresses, of the version of Address.
+type Learned struct {
+	Peer    netip.Addr
+	Address netip.Addr
+}
+
+// LearnedMark is the conntrack mark of the connections opened to a learned address: they stay open when the address
+// expires, as long as the session does, and until the access rules of the peer change.
+const LearnedMark = 0x00415701
 
 // PeerStats is what WireGuard knows of a peer.
 type PeerStats struct {
@@ -96,6 +114,12 @@ type Network interface {
 	// FlushRedirected forgets the redirected connections of a peer that just logged in: conntrack keeps the redirect
 	// of a flow, and its DNS queries and web requests must now reach their real destination.
 	FlushRedirected(addresses ...netip.Addr) error
+	// AddLearned and RemoveLearned let peers reach learned addresses, or no longer, between two Apply.
+	AddLearned(iface string, learned ...Learned) error
+	RemoveLearned(iface string, learned ...Learned) error
+	// ForgetLearned closes the connections of peers to the addresses they learned, of all of them without addresses:
+	// their access rules changed.
+	ForgetLearned(addresses ...netip.Addr) error
 	// Stats returns the peers of all the interfaces, by public key.
 	Stats() (map[wgtypes.Key]PeerStats, error)
 	// IPv6 says why the tunnels can't have IPv6 addresses, nil when they can.

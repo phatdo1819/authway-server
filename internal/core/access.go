@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/phatdo1819/authway-server/internal/names"
 	"github.com/phatdo1819/authway-server/internal/store"
 )
 
@@ -25,15 +26,28 @@ func checkAccess(input *[]string, current []string, server *store.Server, c *che
 	}
 	networks := parsePrefixes(server.Networks)
 	var list []netip.Prefix
+	// the rules as they're kept, in the order given: the networks as netip writes them, the names in lowercase
+	entries := []string{}
 	for _, text := range *input {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
 		}
 		prefix, ok := parseAccess(text)
+		if !ok {
+			// a name, files.corp.lan or *.corp.lan: its addresses are learned inside the networks of the server
+			rule, ok := names.Parse(text)
+			switch {
+			case !ok:
+				c.fail("access", "invalid")
+			case len(networks) == 0:
+				c.fail("access", "outside")
+			case !containsText(entries, rule.String()):
+				entries = append(entries, rule.String())
+			}
+			continue
+		}
 		switch {
-		case !ok:
-			c.fail("access", "invalid")
 		case !insideAny(prefix, networks):
 			c.fail("access", "outside")
 		case overlapsAny(prefix, list):
@@ -41,17 +55,18 @@ func checkAccess(input *[]string, current []string, server *store.Server, c *che
 			c.fail("access", "overlap")
 		default:
 			list = append(list, prefix)
+			entries = append(entries, prefix.String())
 		}
 	}
 	_, failed := c.fields["access"]
 	switch {
-	case len(list) == 0 && !failed:
+	case len(entries) == 0 && !failed:
 		// only blank lines: never all the networks by mistake
 		c.fail("access", "required")
-	case len(list) > MaxNetworks:
+	case len(entries) > MaxNetworks:
 		c.fail("access", "too_many")
 	}
-	return prefixTexts(list)
+	return entries
 }
 
 // parseAccess reads a network, or an address as a network of one host.
@@ -115,9 +130,10 @@ func peerAccess(peer *store.Peer, networks []netip.Prefix) []netip.Prefix {
 
 // allowedNetworks are the networks that the configuration file of a peer routes through the tunnel, besides the
 // tunnels: the networks of its server, or with access rules its own and the DNS servers inside the networks of the
-// server, which it couldn't ask otherwise.
+// server, which it couldn't ask otherwise. With names in its rules, all the networks of the server: their addresses
+// aren't known in advance, and the firewall of the server lets through only what the rules allow.
 func allowedNetworks(server *store.Server, peer *store.Peer) []string {
-	if peer.Access == nil {
+	if peer.Access == nil || hasNames(peer.Access) {
 		return append([]string{}, server.Networks...)
 	}
 	networks := parsePrefixes(server.Networks)

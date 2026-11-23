@@ -487,6 +487,7 @@ function setMode(mode: AuthMode) {
           placeholder="192.168.1.1"
           add-label="Add DNS server"
           :error="fieldMessage(errors.dns)"
+          helper="Peers with names in their access rules use Authway Server instead, which asks these servers."
         />
       </section>
 
