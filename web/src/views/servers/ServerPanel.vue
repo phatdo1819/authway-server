@@ -65,8 +65,16 @@ function routerHop(route: Route): string {
   }
   return route.via || 'the container'
 }
-// what the helper of the Docker host says of a route, amber when the networks get no answer
+// a note under a route: the container has no route to its network, or what the helper of the Docker host says of
+// it. Amber when the networks get no answer
 function hostNote(route: Route): { text: string; warning: boolean } | null {
+  // nothing on the router or the Docker host helps then
+  if (route.no_route) {
+    return {
+      text: `Authway Server's container has no route to ${route.network}, so peers can't reach it. See the System page.`,
+      warning: true,
+    }
+  }
   const host = route.host
   switch (host?.state) {
     case 'routed':

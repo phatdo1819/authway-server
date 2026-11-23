@@ -21,6 +21,8 @@ type RouteView struct {
 	Driver string `json:"driver"`
 	// on a Docker bridge: the route of the Docker host to the container, and its address for the router
 	Host *system.HostRoute `json:"host,omitempty"`
+	// the container has no route to the network, on an internal Docker network say: the peers can't reach it
+	NoRoute bool `json:"no_route,omitempty"`
 }
 
 // uplinkRoutes are the routes of a routed server, one for each version of its networks: the tunnel through the
@@ -88,7 +90,8 @@ func routeViews(routes []system.Route) []RouteView {
 	}
 	views := make([]RouteView, 0, len(routes))
 	for _, route := range routes {
-		view := RouteView{Tunnel: route.Tunnel, Network: route.Network, Via: route.Uplink.Address, Driver: route.Uplink.Driver}
+		view := RouteView{Tunnel: route.Tunnel, Network: route.Network, Via: route.Uplink.Address, Driver: route.Uplink.Driver,
+			NoRoute: route.Uplink.Interface == ""}
 		if route.Uplink.Driver == system.DriverVeth {
 			host := route.Host
 			view.Host = &host

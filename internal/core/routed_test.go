@@ -329,3 +329,18 @@ func TestHostAddressChange(t *testing.T) {
 		t.Errorf("NAT: %s", text)
 	}
 }
+
+// A route the container hasn't: on an internal Docker network, say. The view says so, for the panel of the server.
+func TestRouteViewWithoutRoute(t *testing.T) {
+	views := routeViews([]system.Route{
+		{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"},
+		{Tunnel: "10.8.0.0/24", Network: "192.168.2.0/24",
+			Uplink: system.Uplink{Interface: "eth0", Driver: system.DriverMacvlan, Address: "192.168.2.50"}},
+	})
+	if len(views) != 2 || !views[0].NoRoute || views[0].Via != "" || views[1].NoRoute || views[1].Via != "192.168.2.50" {
+		t.Errorf("views: %+v", views)
+	}
+	if data, _ := json.Marshal(views[1]); strings.Contains(string(data), "no_route") {
+		t.Errorf("a route that works has no no_route: %s", data)
+	}
+}

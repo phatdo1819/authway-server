@@ -390,6 +390,11 @@ func TestCertificateCheck(t *testing.T) {
 	if check := checkOf(t, m.Snapshot(State{}).Checks, "certificate"); check.Title != "The web UI's certificate expires in 20 days" {
 		t.Errorf("days: %q", check.Title)
 	}
+	// not "in 0 days"
+	certificate = &Certificate{NotAfter: c.now.Add(5 * time.Hour)}
+	if check := checkOf(t, m.Snapshot(State{}).Checks, "certificate"); check.Title != "The web UI's certificate expires in less than a day" {
+		t.Errorf("hours: %q", check.Title)
+	}
 }
 
 func TestIPv6Check(t *testing.T) {
@@ -494,8 +499,12 @@ func TestRoutingCheck(t *testing.T) {
 			"The Docker host's address changed",
 			"Your router still sends VPN traffic to the old address, so your networks can't reach the peers. Update its routes: 10.8.0.0/24 via 192.168.1.20 instead of via 192.168.1.10 (Office). Then confirm it in the warning at the top of the page. Give the Docker host a fixed address (a DHCP reservation, for example) so this doesn't happen again."},
 		{[]Route{route(DriverVeth, "172.18.0.2"), route(DriverIPvlan, "192.168.1.50")}, CheckError, "A routed server can't work on ipvlan", ""},
-		{[]Route{{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"}}, CheckUnknown, "Can't read the container's routes",
-			"A routed server needs a route to its networks, but the container has none to 192.168.1.0/24 (Office)."},
+		// no route to the network in the container: an internal Docker network, say
+		{[]Route{{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"}}, CheckWarning, "A routed server can't reach its networks",
+			"The container has no route to 192.168.1.0/24 (Office), so peers can't reach it. Give the container's Docker network a gateway (an internal network has none), or add a route to it."},
+		{[]Route{{Tunnel: "10.8.0.0/24", Network: "192.168.1.0/24"}, {Tunnel: "fd00:1::/64", Network: "2001:db8::/64"}},
+			CheckWarning, "A routed server can't reach its networks",
+			"The container has no route to 192.168.1.0/24 (Office), 2001:db8::/64 (Office), so peers can't reach them. Give the container's Docker network a gateway (an internal network has none), or add routes to them."},
 	} {
 		state := State{StatsAt: c.now, Routed: []RoutedServer{{Name: "Office", Routes: test.routes}}}
 		check := checkOf(t, m.Snapshot(state).Checks, "routing")

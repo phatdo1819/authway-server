@@ -93,6 +93,8 @@ export interface Route {
   driver: string
   // on a Docker bridge: what the helper of compose.host-routes.yaml did. address: the Docker host, for the router
   host?: HostRoute
+  // the container has no route to the network, on an internal Docker network say: the peers can't reach it
+  no_route?: boolean
 }
 
 export interface HostRoute {

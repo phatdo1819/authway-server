@@ -51,7 +51,7 @@ Usage: sudo ./install.sh [options]
   --host-routes        turn on the routed servers through the Docker host (compose.host-routes.yaml)
   --no-host-routes     turn them off
   --dir DIR            the install folder: /opt/authway-server, or the folder of the Authway Server that runs
-  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.3.1
+  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.3.2
   --repo URL           get the source with git from there, when the script doesn't run from a copy of it
   --ref REF            the branch or tag of --repo
   --no-docker-install  stop instead of installing Docker when it's missing
@@ -84,6 +84,8 @@ die() { printf '\n%sError:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 need_value() { # option value: stops when an option that needs a value has none
 	[ -n "${2:-}" ] || die "$1 needs a value: ./install.sh --help"
 }
+# the options as given, for the hint to run it again as root: the loop below takes them away
+OPTIONS="$*"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--public-host) need_value "$1" "${2:-}"; PUBLIC_HOST=$2; shift 2 ;;
@@ -133,7 +135,7 @@ confirm() { # question: true for yes; without questions, yes
 }
 
 [ "$(uname -s)" = Linux ] || die "Authway Server runs on Linux."
-[ "$(id -u)" = 0 ] || die "run it as root: sudo sh $0 $*"
+[ "$(id -u)" = 0 ] || die "run it as root: sudo sh $0${OPTIONS:+ $OPTIONS}"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT

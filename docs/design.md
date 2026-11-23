@@ -154,9 +154,11 @@ of its destination address: a tunnel address belongs to none, the host gets it. 
 the address of the container towards its first network: the interface of the longest route of `/proc/net/route` or
 `/proc/net/ipv6_route` (the loopback and the reject routes left out, then the lowest metric), its driver from the
 `ETHTOOL_GDRVINFO` ioctl (no right needed: `veth` for a Docker bridge, `macvlan`, `ipvlan`) and its first address of
-that version. The view of the server has them (`routes`), and the System page checks them (`routing`): an error on
-ipvlan, a warning on veth without a helper or with a stopped one, an error when the helper refused a route, unknown
-without a route, else the routes to add on the router: through the Docker host, or to the container.
+that version. The view of the server has them (`routes`, with `no_route` when the container has no route to the
+network, which its panel warns about), and the System page checks them (`routing`): an error on ipvlan, a warning on
+veth without a helper or with a stopped one, an error when the helper refused a route, a warning when the container
+has no route to a network (an internal Docker network has no gateway), else the routes to add on the router: through
+the Docker host, or to the container.
 
 The web UI takes that next hop from the routes of any routed server towards the same first IPv4 network
 (`routerRoute`, `web/src/routing.ts`): the Docker host once its helper routes it, or the container on macvlan. The

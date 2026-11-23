@@ -160,12 +160,13 @@ onMounted(async () => {
   loadSnapshot()
   loadHistory(true)
   loadLog()
+  // before the wait below: a page left meanwhile has already stopped it, with onBeforeUnmount
+  stop = every(5000, tick)
   try {
     servers.value = await api.servers()
   } catch {
     // the interfaces show without the names of their servers
   }
-  stop = every(5000, tick)
 })
 onBeforeUnmount(() => stop?.())
 watch(range, () => {

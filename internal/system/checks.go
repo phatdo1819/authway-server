@@ -201,8 +201,15 @@ func checks(s Snapshot, state State, readErr string, log *LogRing, now time.Time
 			add("routing", CheckUnknown, "The Docker host is adding the routes",
 				"The compose.host-routes.yaml helper will add the routes for "+strings.Join(pending, ", ")+" in a few seconds.")
 		case len(unknown) > 0:
-			add("routing", CheckUnknown, "Can't read the container's routes",
-				"A routed server needs a route to its networks, but the container has none to "+strings.Join(unknown, ", ")+".")
+			// the routes of the container were read and none goes there: on an internal Docker network, which has no
+			// gateway, say
+			reach, fix := "it", "a route to it"
+			if len(unknown) > 1 {
+				reach, fix = "them", "routes to them"
+			}
+			add("routing", CheckWarning, "A routed server can't reach its networks",
+				"The container has no route to "+strings.Join(unknown, ", ")+", so peers can't reach "+reach+
+					". Give the container's Docker network a gateway (an internal network has none), or add "+fix+".")
 		case throughHost:
 			add("routing", CheckOK, "Routed servers reach their networks through the Docker host",
 				"Your router needs these routes: "+strings.Join(routes, "; ")+". The Docker host forwards the traffic to the container.")
@@ -356,8 +363,7 @@ func checks(s Snapshot, state State, readErr string, log *LogRing, now time.Time
 		case left <= 0:
 			add("certificate", CheckError, "The web UI's certificate has expired", "It expired on "+dateText(until)+". "+replace)
 		case left < RenewBefore:
-			add("certificate", CheckWarning, fmt.Sprintf("The web UI's certificate expires in %s", plural(int(left.Hours()/24), "day")),
-				"On "+dateText(until)+". "+replace)
+			add("certificate", CheckWarning, "The web UI's certificate expires in "+daysText(left), "On "+dateText(until)+". "+replace)
 		case c.SelfSigned:
 			add("certificate", CheckOK, "The web UI's certificate is valid",
 				"Self-signed, until "+dateText(until)+". Authway Server creates a new one 30 days before it expires.")
