@@ -130,7 +130,7 @@ func TestLatestConnections(t *testing.T) {
 	}
 	defer s.Close()
 	q := s.Q()
-	if latest, err := q.LatestConnections(); err != nil || len(latest) != 0 {
+	if latest, err := q.LatestConnections([]int64{1}); err != nil || len(latest) != 0 {
 		t.Fatalf("an empty history: %v %v", latest, err)
 	}
 	// the rows get the ids 1 to 6 in this order
@@ -141,11 +141,12 @@ func TestLatestConnections(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	latest, err := q.LatestConnections()
+	// peer 3 isn't asked for, peer 4 has no history
+	latest, err := q.LatestConnections([]int64{1, 2, 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[int64]int64{1: 2, 2: 5, 3: 6}
+	want := map[int64]int64{1: 2, 2: 5}
 	if len(latest) != len(want) {
 		t.Fatalf("latest: %+v", latest)
 	}
@@ -153,6 +154,24 @@ func TestLatestConnections(t *testing.T) {
 		if latest[peer].ID != id || latest[peer].PeerID != peer {
 			t.Errorf("peer %d: row %d, want %d", peer, latest[peer].ID, id)
 		}
+	}
+	// straight from the index, without sorting the history
+	rows, err := s.db.Query("EXPLAIN QUERY PLAN SELECT id FROM connections WHERE peer_id = ? ORDER BY last_seen DESC, id DESC LIMIT 1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if text := strings.Join(plan, "; "); !strings.Contains(text, "connections_by_peer") || strings.Contains(text, "TEMP B-TREE") {
+		t.Errorf("query plan: %s", text)
 	}
 }
 

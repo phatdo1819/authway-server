@@ -128,18 +128,19 @@ func (t *Tx) PruneConnections(before int64) error {
 	return err
 }
 
-// LatestConnections returns the latest connection of each peer in the history, by the id of the peer. A deleted peer
-// may have left the id to a new one: its rows started before the new peer was made. One pass over the history,
-// whatever the number of peers: the table has no index by peer.
-func (t *Tx) LatestConnections() (map[int64]Connection, error) {
-	list, err := t.queryConnections(`WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER
-		(PARTITION BY peer_id ORDER BY last_seen DESC, id DESC) AS rank FROM connections) WHERE rank = 1)`)
-	if err != nil {
-		return nil, err
-	}
-	latest := make(map[int64]Connection, len(list))
-	for _, c := range list {
-		latest[c.PeerID] = c
+// LatestConnections returns the latest connection in the history of each of these peers, by the id of the peer; none
+// for a peer without one. A deleted peer may have left the id to a new one: its rows started before the new peer was
+// made. One look-up in the index connections_by_peer for each peer, whatever the size of the history.
+func (t *Tx) LatestConnections(peerIDs []int64) (map[int64]Connection, error) {
+	latest := make(map[int64]Connection, len(peerIDs))
+	for _, id := range peerIDs {
+		list, err := t.queryConnections("WHERE peer_id = ? ORDER BY last_seen DESC, id DESC LIMIT 1", id)
+		if err != nil {
+			return nil, err
+		}
+		if len(list) > 0 {
+			latest[id] = list[0]
+		}
 	}
 	return latest, nil
 }

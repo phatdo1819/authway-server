@@ -320,6 +320,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec("UPDATE servers SET lock_endpoint = ? WHERE lock_endpoint = ?", LockRoaming, LockOff); err != nil {
 		return fmt.Errorf("lock mode: %w", err)
 	}
+	// the latest connection of a peer, for LatestConnections. An index, not a change of the schema: the versions of
+	// before still open the database, and their queries are the same with it
+	if _, err := s.db.Exec("CREATE INDEX IF NOT EXISTS connections_by_peer ON connections (peer_id, last_seen, id)"); err != nil {
+		return fmt.Errorf("index of the connections: %w", err)
+	}
 	return nil
 }
 

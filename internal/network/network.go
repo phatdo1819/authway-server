@@ -88,6 +88,7 @@ type PeerStats struct {
 // Network applies the configuration. The methods are called one at a time.
 type Network interface {
 	// Apply makes the interfaces and the rules match the state. When the rules can't be set, no interface stays up.
+	// A *Warning means everything is set, but some of it works less well.
 	Apply(State) error
 	// AddSession and RemoveSession open and close the gate for one peer, by its addresses, between two Apply.
 	AddSession(iface string, addresses ...netip.Addr) error
@@ -101,6 +102,14 @@ type Network interface {
 	IPv6() error
 	Close() error
 }
+
+// Warning is what Apply returns when the firewall rules and the peers are all set, but a tunnel works less well than
+// it should: its MTU, or its IPv6 address, can't be set. The tunnels carry their traffic, so it isn't a failure, and
+// trying again a few seconds later wouldn't change it.
+type Warning struct{ Err error }
+
+func (w *Warning) Error() string { return w.Err.Error() }
+func (w *Warning) Unwrap() error { return w.Err }
 
 // DefaultMTU is the MTU of an interface without one, as wg-quick sets it.
 const DefaultMTU = 1420

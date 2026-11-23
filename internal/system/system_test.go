@@ -294,6 +294,13 @@ func TestChecks(t *testing.T) {
 		t.Errorf("log: %+v", check)
 	}
 
+	// set, but working less well: a warning, not a failure
+	warned := m.Snapshot(State{ApplyWarning: "wg0: its MTU can't be set", Servers: good.Servers}).Checks
+	if check := checkOf(t, warned, "configuration"); check.Status != CheckWarning || check.Detail != "wg0: its MTU can't be set. "+
+		"The tunnels still carry traffic. Authway Server tries again when a server changes or when it restarts." {
+		t.Errorf("configuration with a warning: %+v", check)
+	}
+
 	// unknown when it can't be read, and old readings of the tunnels
 	probe.details = Details{}
 	list = m.Snapshot(State{StatsAt: c.now.Add(-time.Minute)}).Checks

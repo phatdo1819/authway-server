@@ -1,6 +1,7 @@
 package network
 
 import (
+	"errors"
 	"net/netip"
 	"sync"
 	"time"
@@ -15,7 +16,8 @@ type Fake struct {
 	State    State
 	Sessions map[string]map[netip.Addr]bool
 	Peers    map[wgtypes.Key]PeerStats
-	// ApplyError, when set, is returned by Apply; StatsError by Stats; IPv6Error by IPv6
+	// ApplyError, when set, is returned by Apply, which sets the state only when it's a *Warning; StatsError by
+	// Stats; IPv6Error by IPv6
 	ApplyError error
 	StatsError error
 	IPv6Error  error
@@ -35,7 +37,8 @@ func (f *Fake) Apply(state State) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Applied++
-	if f.ApplyError != nil {
+	var warning *Warning
+	if f.ApplyError != nil && !errors.As(f.ApplyError, &warning) {
 		return f.ApplyError
 	}
 	f.State = state
@@ -47,7 +50,7 @@ func (f *Fake) Apply(state State) error {
 		}
 		f.Sessions[server.Interface] = set
 	}
-	return nil
+	return f.ApplyError
 }
 
 func (f *Fake) AddSession(iface string, addresses ...netip.Addr) error {

@@ -73,6 +73,10 @@ func TestActivityAPI(t *testing.T) {
 	if lines[0] != "at,kind,server,peer,user,by,from,detail" || !strings.Contains(lines[1], `,peer_config,Office,"'=1+2, x",alice,admin,192.168.1.10,`) {
 		t.Errorf("events CSV:\n%s", w.Body.String())
 	}
+	// how many rows the file has, and how many match: the web UI says when the file stops at core.MaxExport
+	if w.Header().Get("X-Row-Count") != "3" || w.Header().Get("X-Total-Count") != "3" {
+		t.Errorf("events CSV counts: %q of %q", w.Header().Get("X-Row-Count"), w.Header().Get("X-Total-Count"))
+	}
 	if w, _ := admin.do("GET", "/api/history/csv", "", true); w.Code != 200 || w.Body.String() != "server,peer,user,address,public_ip,started,ended,end_reason\r\n" {
 		t.Errorf("history CSV: %d %q", w.Code, w.Body.String())
 	}

@@ -7,6 +7,7 @@ import AppIcon, { type IconName } from '../components/AppIcon.vue'
 import UiButton from '../components/UiButton.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { dateTime, day, errorMessage, roleLabel, sentence } from '../format'
+import { every } from '../polling'
 import { isAdmin, notify, session } from '../state'
 
 const router = useRouter()
@@ -67,12 +68,12 @@ async function confirmRoutes() {
   }
 }
 
-let timer: number | undefined
+let stop: (() => void) | undefined
 onMounted(() => {
   refreshStatus()
-  timer = window.setInterval(refreshStatus, 15000)
+  stop = every(15000, refreshStatus)
 })
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => stop?.())
 watch(
   () => route.fullPath,
   () => (menuOpen.value = false),

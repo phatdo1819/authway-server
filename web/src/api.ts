@@ -772,10 +772,16 @@ export const api = {
   connections: (filter: HistoryFilter = {}) => json<Page<Connection>>('GET', '/connections' + query(filter)),
   events: (filter: HistoryFilter = {}) => json<Page<EventItem>>('GET', '/events' + query(filter)),
   // every row of a list that matches the filter, as a CSV file
-  async historyCSV(list: HistoryList, filter: HistoryFilter): Promise<{ name: string; text: string }> {
+  // the file, and how many rows it has of how many match: fewer when it stops at the limit of the server
+  async historyCSV(
+    list: HistoryList,
+    filter: HistoryFilter,
+  ): Promise<{ name: string; text: string; rows: number; total: number }> {
     const response = await send('GET', `/${list}/csv` + query({ ...filter, limit: undefined, offset: undefined }))
     const disposition = response.headers.get('Content-Disposition') ?? ''
     const match = /filename="?([^";]+)"?/.exec(disposition)
-    return { name: match?.[1] ?? `authway-${list}.csv`, text: await response.text() }
+    const rows = Number(response.headers.get('X-Row-Count') ?? 0)
+    const total = Number(response.headers.get('X-Total-Count') ?? rows)
+    return { name: match?.[1] ?? `authway-${list}.csv`, text: await response.text(), rows, total }
   },
 }

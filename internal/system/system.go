@@ -443,6 +443,8 @@ func (m *Monitor) History(seconds int, since int64) History {
 // State is what Authway Server knows of itself, for the checks.
 type State struct {
 	ApplyError string
+	// everything is set, but works less well: an MTU or an IPv6 address that can't be set
+	ApplyWarning string
 	// the latest reading of the tunnels
 	StatsError string
 	StatsAt    time.Time

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/store"
 	"github.com/phatdo1819/authway-server/internal/system"
 )
@@ -78,5 +79,43 @@ func TestSystemChecks(t *testing.T) {
 	f.s.Tick()
 	if snapshot, _ := f.s.System(); checkOf(t, snapshot, "tunnels").Status != system.CheckOK {
 		t.Errorf("tunnels read again: %+v", checkOf(t, snapshot, "tunnels"))
+	}
+}
+
+// A tunnel that works less well, with an MTU or an IPv6 address that can't be set, is a warning: on the System page
+// only. Authway Server stays healthy, the web UI has no failure to show, the peers are set, and the configuration
+// isn't applied again at every pass of the monitor as a failure is.
+func TestApplyWarning(t *testing.T) {
+	f := setup(t)
+	f.s.opts.System = system.New(system.Options{Probe: system.Simulated(), Now: f.clock.Now})
+	f.net.ApplyError = &network.Warning{Err: errors.New("wg0: its MTU can't be set: RTNETLINK answers: Invalid argument")}
+	f.server(store.AuthKey)
+	f.s.Tick()
+	if status, _ := f.s.Status(); status.ApplyError != "" {
+		t.Errorf("a failure for the web UI: %q", status.ApplyError)
+	}
+	if failing := f.s.Health(); len(failing) != 0 {
+		t.Errorf("unhealthy: %v", failing)
+	}
+	if len(f.net.State.Servers) != 1 {
+		t.Errorf("not set: %+v", f.net.State)
+	}
+	applied := f.net.Applied
+	f.s.Tick()
+	f.s.Tick()
+	if f.net.Applied != applied {
+		t.Errorf("applied again at each pass: %d, then %d", applied, f.net.Applied)
+	}
+	snapshot, _ := f.s.System()
+	if check := checkOf(t, snapshot, "configuration"); check.Status != system.CheckWarning ||
+		check.Title != "Configuration applied with warnings" || !strings.HasPrefix(check.Detail, "wg0: its MTU can't be set") {
+		t.Errorf("configuration: %+v", check)
+	}
+	// set right at the next change: no warning left
+	f.net.ApplyError = nil
+	f.server(store.AuthKey)
+	snapshot, _ = f.s.System()
+	if check := checkOf(t, snapshot, "configuration"); check.Status != system.CheckOK {
+		t.Errorf("configuration after the change: %+v", check)
 	}
 }

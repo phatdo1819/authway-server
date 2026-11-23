@@ -16,6 +16,7 @@ import UiBadge from '../components/UiBadge.vue'
 import UiButton from '../components/UiButton.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { alertKind, dateTime, duration, endReason, errorMessage, eventKind, eventTone, formatBytes, isWebEvent } from '../format'
+import { every } from '../polling'
 import { canManage, confirm, download, notify } from '../state'
 
 type Tab = 'sessions' | 'history' | 'connections' | 'alerts' | 'events'
@@ -33,6 +34,8 @@ const offset = ref(0)
 const servers = ref<Server[]>([])
 const error = ref('')
 const csvBusy = ref(false)
+// the latest CSV file stopped at the server's limit: what it has of what matches
+const csvShort = ref('')
 // the setting, for the sentence at the top
 const historyDays = ref(0)
 
@@ -170,6 +173,7 @@ watch(search, (text) => {
 watch([tab, words, server, from, to, kind], () => {
   offset.value = 0
   total.value = 0
+  csvShort.value = ''
   load()
 })
 
@@ -186,6 +190,10 @@ async function downloadCSV() {
   try {
     const file = await api.historyCSV(tab.value as HistoryList, filter())
     download(file.name, file.text, 'text/csv')
+    csvShort.value =
+      file.rows < file.total
+        ? `The CSV file has the latest ${file.rows.toLocaleString()} of the ${file.total.toLocaleString()} matching rows. Narrow the dates to download the rest.`
+        : ''
   } catch (e) {
     notify(errorMessage(e), 'error')
   } finally {
@@ -193,10 +201,10 @@ async function downloadCSV() {
   }
 }
 
-let timer: number | undefined
+let stop: (() => void) | undefined
 onMounted(async () => {
   load()
-  timer = window.setInterval(load, 10000)
+  stop = every(10000, load)
   try {
     servers.value = await api.servers()
   } catch {
@@ -209,7 +217,7 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
-  clearInterval(timer)
+  stop?.()
   clearTimeout(typing)
 })
 
@@ -349,8 +357,9 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
       are accurate to the minute. Date filters include connections that overlap the dates.
     </p>
     <p v-else-if="paged" class="mt-3 text-sm text-slate-500 dark:text-slate-400">
-      The CSV file includes every row that matches the filters, not just this page.
+      The CSV file includes up to 100,000 rows that match the filters, not just this page.
     </p>
+    <p v-if="csvShort" class="mt-2 text-sm text-amber-700 dark:text-amber-400">{{ csvShort }}</p>
 
     <div class="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <div class="relative overflow-x-auto">

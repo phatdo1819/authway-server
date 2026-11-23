@@ -33,8 +33,8 @@ import (
 	"github.com/phatdo1819/authway-server/internal/system"
 )
 
-// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.3.0+abc1234"
-var version = "0.3.0"
+// version is the one of this source; a build can add to it, -ldflags "-X main.version=0.3.1+abc1234"
+var version = "0.3.1"
 
 type config struct {
 	data          string

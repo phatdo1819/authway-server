@@ -13,7 +13,7 @@ func (s *Service) System() (system.Snapshot, error) {
 		return system.Snapshot{}, ErrNotFound
 	}
 	s.mu.Lock()
-	state := system.State{ApplyError: s.applyError, StatsError: s.statsError, StatsAt: s.statsAt}
+	state := system.State{ApplyError: s.applyError, ApplyWarning: s.applyWarning, StatsError: s.statsError, StatsAt: s.statsAt}
 	if s.opts.Directory != nil && s.directorySettingsLocked().Enabled {
 		status := s.directoryStatus
 		state.Directory = &system.DirectoryState{Error: status.Error, Members: status.Members, Held: len(status.Held),

@@ -1,7 +1,7 @@
 {
   "name": "authway-server-ui",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,16 +10,16 @@
   },
   "dependencies": {
     "qrcode": "1.5.4",
-    "vue": "3.5.13",
-    "vue-router": "4.5.1"
+    "vue": "3.5.46",
+    "vue-router": "4.6.5"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.1.8",
+    "@tailwindcss/vite": "4.3.5",
     "@types/qrcode": "1.5.5",
-    "@vitejs/plugin-vue": "5.2.4",
-    "tailwindcss": "4.1.8",
-    "typescript": "5.8.3",
-    "vite": "6.3.5",
-    "vue-tsc": "2.2.10"
+    "@vitejs/plugin-vue": "6.0.11",
+    "tailwindcss": "4.3.5",
+    "typescript": "5.9.3",
+    "vite": "8.3.8",
+    "vue-tsc": "3.3.14"
   }
 }

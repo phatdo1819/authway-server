@@ -360,15 +360,16 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 	if err != nil {
 		return nil, err
 	}
-	// the history is read only for the peers WireGuard has no handshake of: it's the whole table
-	var latest map[int64]store.Connection
+	// the history, only for the peers WireGuard has no handshake of
+	var unseen []int64
 	for index := range peers {
 		if peerStatsOf(s.stats, &peers[index]).LastHandshake.IsZero() {
-			if latest, err = q.LatestConnections(); err != nil {
-				return nil, err
-			}
-			break
+			unseen = append(unseen, peers[index].ID)
 		}
+	}
+	latest, err := q.LatestConnections(unseen)
+	if err != nil {
+		return nil, err
 	}
 	now := s.now()
 	views := make([]PeerView, 0, len(peers))

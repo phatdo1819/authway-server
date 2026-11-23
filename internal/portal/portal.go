@@ -41,8 +41,9 @@ func New(service *core.Service, options Options) *Portal {
 	if options.Log == nil {
 		options.Log = slog.Default()
 	}
-	// 30 requests a minute for each address, 10 at once: it only stops floods, the failed logins are counted by the
-	// core for each public IP. The status, which reads WireGuard under the lock of the core, 120 a minute, 20 at once
+	// 30 requests a minute for each address, 10 at once, for the login, the logout and the device key together: it
+	// only stops floods, the failed logins are counted by the core for each public IP. The status, which reads
+	// WireGuard under the lock of the core, 120 a minute, 20 at once
 	return &Portal{
 		core: service, log: options.Log, devPeer: options.DevPeer,
 		limiter: newLimiter(30, time.Minute, 10), statusLimiter: newLimiter(120, time.Minute, 20),
@@ -57,7 +58,7 @@ func (p *Portal) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", p.limitedBy(p.statusLimiter, p.status))
 	mux.HandleFunc("POST /api/login", p.limited(p.login))
-	mux.HandleFunc("POST /api/logout", p.logout)
+	mux.HandleFunc("POST /api/logout", p.limited(p.logout))
 	mux.HandleFunc("POST /api/device-key", p.limited(p.deviceKey))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})

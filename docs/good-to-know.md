@@ -38,10 +38,10 @@
 - **The log of the container** keeps 3 files of 10 MB at most (`logging` in compose.yaml). The latest lines are also
   on the **System** page, in its **Log** tab.
 - **The version** is at the bottom of the menu and on the System page: the one of the source, or what you give at
-  the build to tell builds apart: `AUTHWAY_VERSION=0.3.0+$(git rev-parse --short HEAD) docker compose build`.
+  the build to tell builds apart: `AUTHWAY_VERSION=0.3.1+$(git rev-parse --short HEAD) docker compose build`.
 - **A published image**: `.github/workflows/image.yml` builds the image for amd64 and arm64 and publishes it on the
   GitHub Container Registry of the repository at each tag `v<version>` (the version of `cmd/authway-server/main.go`).
-  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.3.0`.
+  To use it instead of building, replace `build:` in compose.yaml with `image: ghcr.io/phatdo1819/authway-server:0.3.1`.
 - **The certificate of the web UI**: the self-signed one is valid 2 years and made again 30 days before its end (the
   browsers then warn once more). Your own `data/tls/cert.pem` and `data/tls/key.pem` are loaded within a minute,
   without a restart; a pair that doesn't load leaves the one before in use. Yours is never replaced: the System page

@@ -9,6 +9,7 @@ import UiEmpty from '../../components/UiEmpty.vue'
 import UiMenu, { type MenuItem } from '../../components/UiMenu.vue'
 import UiNotice from '../../components/UiNotice.vue'
 import { ago, authModeLabel, dateTime, duration, errorMessage, formatBytes, lockLabel } from '../../format'
+import { every } from '../../polling'
 import { routerRoute } from '../../routing'
 import { canManage, confirm, isAdmin, notify } from '../../state'
 import PeerAlertsModal from './PeerAlertsModal.vue'
@@ -151,14 +152,14 @@ async function loadUsers() {
   }
 }
 
-let timer: number | undefined
+let stop: (() => void) | undefined
 onMounted(() => {
   loadPeers()
   loadUsers()
   // the state of the peers changes on its own: handshakes, logins
-  timer = window.setInterval(loadPeers, 10000)
+  stop = every(10000, loadPeers)
 })
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => stop?.())
 
 function addPeer() {
   editing.value = null

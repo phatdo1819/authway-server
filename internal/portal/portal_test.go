@@ -186,6 +186,16 @@ func TestLimiter(t *testing.T) {
 	if statuses[200] < 20 || statuses[429] == 0 {
 		t.Errorf("30 statuses at once: %v", statuses)
 	}
+	// the logout ends the session under the lock of the core: a flood of it is stopped too
+	h = setup(t)
+	logouts := map[int]int{}
+	for range 15 {
+		w, _ := request(h, "POST", "/api/logout", "10.8.0.1", "application/json", "")
+		logouts[w.Code]++
+	}
+	if logouts[200] == 0 || logouts[429] == 0 {
+		t.Errorf("15 logouts at once: %v", logouts)
+	}
 }
 
 // Device binding over HTTP, as Authway does it: the status gives the challenge, the login carries the proof, the

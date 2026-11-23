@@ -221,8 +221,9 @@ address of the server as host: a page of another site whose name resolves to it 
   [The WireGuard key of the device](#the-wireguard-key-of-the-device)
 
 The POST requests need `Content-Type: application/json`: a form of another site can't send it without a CORS
-preflight, which the API never answers. Each address gets 30 requests a minute, 10 at once, on login and device-key,
-and 120 a minute, 20 at once, on status, which reads WireGuard: `429 too_many_requests` with `retry_after` past them.
+preflight, which the API never answers. Each address gets 30 requests a minute, 10 at once, on login, logout and
+device-key together, and 120 a minute, 20 at once, on status, which reads WireGuard: `429 too_many_requests` with
+`retry_after` past them.
 
 The configuration file of a peer of a server with login has `# Login = http://<server>:8181/` in `[Interface]`.
 
@@ -643,7 +644,8 @@ the name of their server, so a renamed server loses its older events, which the 
 `until`, Unix times, for the sessions and the connections that overlap them and the events in them; `type`, for the
 events, `web` or `vpn`; `limit` (up to 1000) and `offset`. `GET /api/<list>/csv` takes the same filter and answers
 every row that matches, up to 100,000, as CSV: times in UTC, bytes as numbers, reasons and kinds as codes, and a `'`
-before a cell that a spreadsheet would read as a formula. The open sessions and the alerts are few: the web UI filters
+before a cell that a spreadsheet would read as a formula. `X-Row-Count` and `X-Total-Count` say how many rows the file
+has and how many match, so the web UI says when the file stops at 100,000. The open sessions and the alerts are few: the web UI filters
 them itself.
 
 Every list has the newest on top and the oldest at the bottom: the sessions, open or ended, and the connections, open
@@ -703,7 +705,8 @@ The page has five tabs (`web/src/views/SystemView.vue`), the one open in the add
 checks and a summary), History, Network (the interfaces), Host (the disks, the host, Authway Server) and Log. The
 snapshot is read every 5 seconds whatever the tab; the history and the log only while their tab is open, and a tab
 opened again asks the points it missed. A dot on Overview, and on Log for the errors of the log, says a check isn't
-right.
+right. Like every page that refreshes itself (`web/src/polling.ts`), it asks nothing while the browser tab is in the
+background, and refreshes at once when it's shown again.
 
 - **Every 5 seconds** the monitor reads the counters: the ticks of the processors (`/proc/stat`), the memory
   (`MemTotal`, `MemAvailable`), the bytes of each interface (`/proc/net/dev`, the network of the container), and what
@@ -717,7 +720,8 @@ right.
   `ip_forward`, the connection tracking table of the container, the limit of memory of the cgroup, the open files,
   the interfaces (`net.Interfaces`, the kind from `/sys/class/net/*/uevent` and `type`), `statfs` of the data folder
   and of `/` when it's another file system, and the size of the database and of its WAL.
-- **The checks** add what the core knows: the configuration applied or its error, the latest reading of the tunnels
+- **The checks** add what the core knows: the configuration applied, its error, or a warning when a tunnel works but
+  its MTU or its IPv6 address can't be set (not a failure: not retried, not in the health), the latest reading of the tunnels
   (an error, or older than 30 seconds), and the interfaces of the enabled servers. Then IP forwarding, IPv6 (only
   when a server has an IPv6 network: see [IPv6](#ipv6)), the way to the networks of the routed servers (only with
   one: see [Routed servers](#routed-servers)), the clock, the

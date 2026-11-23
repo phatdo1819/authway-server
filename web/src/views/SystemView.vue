@@ -19,6 +19,7 @@ import UiBadge from '../components/UiBadge.vue'
 import UiButton from '../components/UiButton.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { dateTime, errorMessage, formatBytes, formatPercent, formatRate, uptime } from '../format'
+import { every } from '../polling'
 
 // The System page: the checks of what goes wrong most, the resources of the host and of Authway Server, their
 // history, the network interfaces, the disks and the latest lines of the log, in tabs. The snapshot is read again
@@ -107,12 +108,9 @@ async function loadLog() {
   }
 }
 
-let timer: number | undefined
+let stop: (() => void) | undefined
 let ticks = 0
 function tick() {
-  if (document.hidden) {
-    return
-  }
   ticks++
   loadSnapshot()
   // the points of a minute come every minute; a tab opened again gets the ones it missed
@@ -167,9 +165,9 @@ onMounted(async () => {
   } catch {
     // the interfaces show without the names of their servers
   }
-  timer = window.setInterval(tick, 5000)
+  stop = every(5000, tick)
 })
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => stop?.())
 watch(range, () => {
   points.value = []
   loadHistory(true)

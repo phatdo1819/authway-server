@@ -22,7 +22,7 @@ func (a *Admin) historyCSV(w http.ResponseWriter, r *http.Request, who *identity
 		rows = append(rows, []string{s.ServerName, s.PeerName, s.Username, s.Address, s.Endpoint, isoTime(s.StartedAt),
 			isoTime(s.EndedAt), s.EndReason})
 	}
-	writeCSV(w, "authway-logins", rows)
+	writeCSV(w, "authway-logins", rows, page.Total)
 }
 
 func (a *Admin) connectionsCSV(w http.ResponseWriter, r *http.Request, who *identity) {
@@ -36,7 +36,7 @@ func (a *Admin) connectionsCSV(w http.ResponseWriter, r *http.Request, who *iden
 		rows = append(rows, []string{c.ServerName, c.PeerName, c.Username, c.Address, c.Endpoint, isoTime(c.StartedAt),
 			isoTime(c.LastSeen), isoTime(c.EndedAt), strconv.FormatInt(c.Received, 10), strconv.FormatInt(c.Sent, 10)})
 	}
-	writeCSV(w, "authway-connections", rows)
+	writeCSV(w, "authway-connections", rows, page.Total)
 }
 
 func (a *Admin) eventsCSV(w http.ResponseWriter, r *http.Request, who *identity) {
@@ -49,11 +49,15 @@ func (a *Admin) eventsCSV(w http.ResponseWriter, r *http.Request, who *identity)
 	for _, e := range page.Items {
 		rows = append(rows, []string{isoTime(e.At), e.Kind, e.ServerName, e.PeerName, e.Username, e.By, e.Source, e.Detail})
 	}
-	writeCSV(w, "authway-events", rows)
+	writeCSV(w, "authway-events", rows, page.Total)
 }
 
-func writeCSV(w http.ResponseWriter, name string, rows [][]string) {
+// writeCSV writes the header row and the rows. X-Row-Count and X-Total-Count say how many rows the file has and how
+// many match: more when the file stops at core.MaxExport, which the web UI says.
+func writeCSV(w http.ResponseWriter, name string, rows [][]string, total int) {
 	stamp := time.Now().UTC().Format("20060102-1504")
+	w.Header().Set("X-Row-Count", strconv.Itoa(len(rows)-1))
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + "-" + stamp + ".csv"}))
 	var out strings.Builder

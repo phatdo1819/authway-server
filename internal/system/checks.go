@@ -39,11 +39,15 @@ func checks(s Snapshot, state State, readErr string, log *LogRing, now time.Time
 		list = append(list, Check{ID: id, Status: status, Title: title, Detail: detail})
 	}
 
-	if state.ApplyError == "" {
-		add("configuration", CheckOK, "Configuration applied", "Interfaces and firewall rules match the servers.")
-	} else {
+	switch {
+	case state.ApplyError != "":
 		add("configuration", CheckError, "The configuration couldn't be applied",
 			state.ApplyError+". Authway Server retries every few seconds.")
+	case state.ApplyWarning != "":
+		add("configuration", CheckWarning, "Configuration applied with warnings",
+			state.ApplyWarning+". The tunnels still carry traffic. Authway Server tries again when a server changes or when it restarts.")
+	default:
+		add("configuration", CheckOK, "Configuration applied", "Interfaces and firewall rules match the servers.")
 	}
 
 	switch {

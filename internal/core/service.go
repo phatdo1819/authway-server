@@ -163,8 +163,10 @@ type Service struct {
 	started time.Time
 
 	applyError string
-	stats      map[wgtypes.Key]network.PeerStats
-	statsAt    time.Time
+	// set, but working less well: see network.Warning
+	applyWarning string
+	stats        map[wgtypes.Key]network.PeerStats
+	statsAt      time.Time
 	// when each peer last sent something, and the keepalive of each server by interface, from the latest state: the
 	// status of the peers, connected or not
 	activity   map[wgtypes.Key]peerActivity
@@ -270,7 +272,8 @@ func (s *Service) LoginPort() int {
 }
 
 // applyLocked puts the configuration of the database on the system. A failure is kept for the web UI: the rest of
-// the configuration still works, and the next change tries again.
+// the configuration still works, and the monitor tries again every few seconds. A warning is kept for the System
+// page only: everything is set and works, so it's neither a failure nor tried again before the next change.
 func (s *Service) applyLocked() {
 	s.syncDevicesLocked()
 	defer s.syncHostRoutesLocked()
@@ -278,6 +281,15 @@ func (s *Service) applyLocked() {
 	if err == nil {
 		err = s.net.Apply(state)
 	}
+	warning := ""
+	var applied *network.Warning
+	if errors.As(err, &applied) {
+		warning, err = applied.Error(), nil
+		if warning != s.applyWarning {
+			s.log.Warn("the configuration is applied, but some of it works less well", "warning", warning)
+		}
+	}
+	s.applyWarning = warning
 	if err != nil {
 		if s.applyError != err.Error() {
 			s.log.Error("can't apply the configuration", "error", err)

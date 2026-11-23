@@ -51,7 +51,7 @@ Usage: sudo ./install.sh [options]
   --host-routes        turn on the routed servers through the Docker host (compose.host-routes.yaml)
   --no-host-routes     turn them off
   --dir DIR            the install folder: /opt/authway-server, or the folder of the Authway Server that runs
-  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.3.0
+  --image REF          use a published image instead of building one: ghcr.io/phatdo1819/authway-server:0.3.1
   --repo URL           get the source with git from there, when the script doesn't run from a copy of it
   --ref REF            the branch or tag of --repo
   --no-docker-install  stop instead of installing Docker when it's missing

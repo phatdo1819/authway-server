@@ -58,11 +58,16 @@ func (l *Linux) Apply(state State) error {
 	if err != nil {
 		return err
 	}
-	var errs []error
+	var errs, warnings []error
 	wanted := map[string]bool{}
 	for _, server := range state.Servers {
 		wanted[server.Interface] = true
-		if err := l.applyServer(server, links[server.Interface]); err != nil {
+		err := l.applyServer(server, links[server.Interface])
+		var warning *Warning
+		switch {
+		case errors.As(err, &warning):
+			warnings = append(warnings, fmt.Errorf("%s: %w", server.Interface, warning.Err))
+		case err != nil:
 			errs = append(errs, fmt.Errorf("%s: %w", server.Interface, err))
 		}
 	}
@@ -73,13 +78,25 @@ func (l *Linux) Apply(state State) error {
 			}
 		}
 	}
-	return errors.Join(errs...)
+	return joinWarnings(errs, warnings)
+}
+
+// joinWarnings returns the failures with the warnings after them, or a *Warning when nothing failed
+func joinWarnings(errs, warnings []error) error {
+	if len(errs) > 0 {
+		return errors.Join(append(errs, warnings...)...)
+	}
+	if len(warnings) > 0 {
+		return &Warning{Err: errors.Join(warnings...)}
+	}
+	return nil
 }
 
 // applyServer sets up the interface of a server. What matters for safety is its peers: when they can't be set, the
 // interface goes down, fail closed as with the firewall, since it can still have a peer deleted or disabled since,
 // which nothing else stops on a server without a login. The next try, a few seconds later, brings it up again. An
-// MTU or an address that can't be set only makes the tunnel work less well: it stays up, and the error says why.
+// MTU or an IPv6 address that can't be set only makes the tunnel work less well: it stays up, with a *Warning that
+// says why.
 func (l *Linux) applyServer(server Server, exists bool) error {
 	name := server.Interface
 	if !exists {
@@ -90,31 +107,33 @@ func (l *Linux) applyServer(server Server, exists bool) error {
 			return err
 		}
 	}
-	var errs []error
+	var errs, warnings []error
 	mtu := server.MTU
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
 	if err := run("", "ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu)); err != nil {
-		errs = append(errs, fmt.Errorf("its MTU can't be set: %w", err))
+		warnings = append(warnings, fmt.Errorf("its MTU can't be set: %w", err))
 	}
 	ipv6Err, err := setAddresses(name, server)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("its addresses can't be set: %w", err))
 	}
-	errs = append(errs, ipv6Err)
+	if ipv6Err != nil {
+		warnings = append(warnings, ipv6Err)
+	}
 	if err := l.configure(server); err != nil {
 		errs = append(errs, err)
 		if downErr := run("", "ip", "link", "set", "dev", name, "down"); downErr != nil {
 			l.log.Error("can't take a tunnel down", "interface", name, "error", downErr)
-			return errors.Join(errs...)
+			return joinWarnings(errs, warnings)
 		}
-		return fmt.Errorf("%w; the tunnel is down until its peers can be set", errors.Join(errs...))
+		return fmt.Errorf("%w; the tunnel is down until its peers can be set", joinWarnings(errs, warnings))
 	}
 	if err := run("", "ip", "link", "set", "dev", name, "up"); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return joinWarnings(errs, warnings)
 }
 
 // setAddresses gives the interface the addresses of the server, and takes away the others: one by one, so the
