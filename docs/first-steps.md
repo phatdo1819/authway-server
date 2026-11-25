@@ -18,12 +18,15 @@ Once Authway Server is [installed](install.md):
    - a name, the public address (the one of the install, proposed) and the UDP port: 51820 for the first, forwarded
      by your router;
    - the tunnel network and its IPv6 one, both proposed;
-   - the networks the peers reach, your LAN for example `192.168.1.0/24`, and the DNS servers of the peers;
+   - the networks the peers reach, your LAN for example `192.168.1.0/24`, and the DNS servers of the peers. Leave the
+     networks empty for a server that only sends some internet sites through the VPN, by name;
    - the login: key only, password, or password and code; then the protections against copies, device binding, NAT
      or routed, and the traffic between peers. Each setting says what it does, and the **?** explains NAT and routed.
 5. **Add a peer** to the server: on a server with login, choose its user. The address in the tunnel is the next free
-   one. Under **Networks it reaches**, keep all the networks of the server, or choose only some, `192.168.1.10` for
-   one device. The configuration opens: download the file, or show the QR code to a phone.
+   one. Under **Networks it reaches**, keep all the networks of the server, or choose **Only some of them**: an
+   address, `192.168.1.10` for one device, a network, or a name, `files.corp.lan` or `app.example.com` (see
+   [Good to know](good-to-know.md#peers-and-devices)). On a server without networks, the peer has **Sites it reaches
+   by name** instead. The configuration opens: download the file, or show the QR code to a phone.
 6. **Connect a device**: import the file in Authway, or in a WireGuard app and log in with a browser. See
    [Connect a device](#connect-a-device) below.
 7. **Check**: the panel of the server shows the peers connected and logged in, **Sessions** who is logged in now,
@@ -34,11 +37,14 @@ Once Authway Server is [installed](install.md):
 The configuration file of a peer, or its QR code, goes into a WireGuard app. Which app depends on the login of the
 server:
 
-| Login of the server | Authway (Windows, macOS) | Official WireGuard apps (Windows, macOS, Linux, iOS, Android) |
+| Login of the server | Authway (Windows, macOS, Linux) | Official WireGuard apps (Windows, macOS, Linux, iOS, Android) |
 |---|---|---|
 | WireGuard key only | Connects | Connects, as with any WireGuard server |
 | Password, or password and code | Connects, and opens its login window by itself | Connect, then the user logs in with a browser |
 | With device binding | Connects, logs in and enrolls the computer | Can't log in |
+
+With names in a peer's access rules, both kinds of app work: Authway routes the sites with their real addresses, and
+the WireGuard apps reach the internet sites through stand-in addresses (198.18.x.x), over IPv4.
 
 ### With Authway
 

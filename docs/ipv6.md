@@ -14,6 +14,9 @@
 - **A server without an IPv6 network** drops IPv6, as before. A peer of it that sends all its traffic through the
   tunnel sends only IPv4 there: its IPv6 goes out of the device, as with any WireGuard file that lists only
   `0.0.0.0/0`. With an IPv6 network, the file lists `::/0` too.
+- **Names in the access rules**: with the Authway app, a site by name goes through the VPN over IPv6 too when the
+  server has an IPv6 network. The other WireGuard apps reach internet sites by name over IPv4 only: the server takes
+  the IPv6 addresses out of their DNS answers.
 - **The login page** stays at the IPv4 address of the server, the one in the files. It answers on the IPv6 address too,
   and before the login a name resolves to both addresses of the server.
 - **Docker**: compose.yaml turns on IPv6 on the network of the container (`enable_ipv6`) and IPv6 forwarding inside it.

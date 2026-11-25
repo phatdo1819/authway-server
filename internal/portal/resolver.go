@@ -2,9 +2,7 @@ package portal
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"net/netip"
 	"time"
@@ -14,11 +12,11 @@ import (
 
 // The DNS server of the peers with names in their access rules: once they're logged in, nftables sends their DNS
 // queries here, whatever server they ask. Each one goes to the DNS servers of their server, and before the answer goes
-// back, Authway Server opens the addresses it gives for the names of their rules: the device connects at once.
+// back, Authway Server opens the addresses it gives for the names of their rules, and puts the stand-in addresses of
+// their internet addresses in it, or for the Authway app, which routes them itself, the list of the routes: the
+// device connects at once.
 
 const (
-	// how long a DNS server has to answer, before the next one is asked
-	resolverTimeout = 3 * time.Second
 	// the queries answered at once: past it, a query is dropped and the device asks again
 	maxResolving = 256
 	// a TCP connection: the time for each query, and the queries it can send
@@ -103,12 +101,12 @@ func (p *Portal) resolveTCP(ctx context.Context, listener net.Listener, slots ch
 			defer conn.Close()
 			for count := 0; count < maxTCPQueries; count++ {
 				conn.SetDeadline(time.Now().Add(resolverTCPTimeout))
-				query, err := readMessage(conn)
+				query, err := names.ReadMessage(conn)
 				if err != nil || !p.resolverLimiter.allow(source, time.Now()) {
 					return
 				}
 				reply := p.resolve(ctx, source, query, true)
-				if reply == nil || writeMessage(conn, reply) != nil {
+				if reply == nil || names.WriteMessage(conn, reply) != nil {
 					return
 				}
 			}
@@ -142,85 +140,18 @@ func (p *Portal) resolve(ctx context.Context, source netip.Addr, query []byte, t
 	if !ok {
 		return nil
 	}
+	// the Authway app routes the addresses of the names itself: the DNS servers never see its option
+	asked, routes := names.TakeRoutes(query)
 	for _, upstream := range upstreams {
-		reply, err := exchange(ctx, upstream, query, tcp)
+		reply, err := names.Exchange(ctx, upstream, asked, tcp)
 		if err != nil {
 			p.log.Debug("a DNS server didn't answer a query of a peer", "server", upstream, "error", err)
 			continue
 		}
-		p.core.Learn(source, reply)
-		return reply
+		if routes {
+			reply = names.WithoutRoutes(reply)
+		}
+		return p.core.Learn(source, reply, routes)
 	}
 	return names.Refused(query)
-}
-
-// exchange sends a query to a DNS server and reads its reply, over UDP or TCP
-func exchange(ctx context.Context, server netip.AddrPort, query []byte, tcp bool) ([]byte, error) {
-	network := "udp"
-	if tcp {
-		network = "tcp"
-	}
-	dialer := net.Dialer{Timeout: resolverTimeout}
-	conn, err := dialer.DialContext(ctx, network, server.String())
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(resolverTimeout))
-	if tcp {
-		if err := writeMessage(conn, query); err != nil {
-			return nil, err
-		}
-		reply, err := readMessage(conn)
-		if err != nil {
-			return nil, err
-		}
-		if !replies(reply, query) {
-			return nil, errors.New("not the reply to the query")
-		}
-		return reply, nil
-	}
-	if _, err := conn.Write(query); err != nil {
-		return nil, err
-	}
-	buffer := make([]byte, 65535)
-	for {
-		// another packet on the port: ignored, until the reply or the deadline
-		n, err := conn.Read(buffer)
-		if err != nil {
-			return nil, err
-		}
-		if replies(buffer[:n], query) {
-			return append([]byte(nil), buffer[:n]...), nil
-		}
-	}
-}
-
-// replies tells whether a message is a reply with the ID of a query
-func replies(reply, query []byte) bool {
-	return len(reply) >= 12 && reply[2]&0x80 != 0 && reply[0] == query[0] && reply[1] == query[1]
-}
-
-// readMessage reads a DNS message of a TCP connection: its length on 2 bytes, then the message
-func readMessage(conn io.Reader) ([]byte, error) {
-	var length [2]byte
-	if _, err := io.ReadFull(conn, length[:]); err != nil {
-		return nil, err
-	}
-	message := make([]byte, binary.BigEndian.Uint16(length[:]))
-	if _, err := io.ReadFull(conn, message); err != nil {
-		return nil, err
-	}
-	return message, nil
-}
-
-func writeMessage(conn io.Writer, message []byte) error {
-	if len(message) > 65535 {
-		return errors.New("a DNS message is 65535 bytes at most")
-	}
-	data := make([]byte, 2+len(message))
-	binary.BigEndian.PutUint16(data, uint16(len(message)))
-	copy(data[2:], message)
-	_, err := conn.Write(data)
-	return err
 }

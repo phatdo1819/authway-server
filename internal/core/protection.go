@@ -158,7 +158,7 @@ func (s *Service) forgetPeerLocked(id int64) {
 	delete(s.copies, id)
 	delete(s.mismatches, id)
 	delete(s.counters, id)
-	delete(s.learned, id)
+	s.dropLearnedLocked(id)
 }
 
 func (l *loginFailures) prune(now time.Time) {
@@ -322,6 +322,7 @@ func (s *Service) resumeLocked(session store.Session, server *store.Server) {
 			s.applyLocked()
 		}
 	}
+	s.wakeLookups()
 	s.log.Info("session resumed", "user", session.Username, "peer", session.PeerName, "from", session.Endpoint)
 	s.eventLocked(store.Event{Kind: "session_resumed", ServerName: session.ServerName, PeerName: session.PeerName,
 		Username: session.Username, Source: session.Endpoint})

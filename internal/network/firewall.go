@@ -105,6 +105,38 @@ func LearnedCommand(add bool, iface string, learned Learned) string {
 		learned.Peer, learned.Address)
 }
 
+// StandInMap is the map of the stand-in addresses to the internet addresses they lead to, for all the servers: only
+// with a server that uses them.
+const StandInMap = "stand_ins"
+
+// usesStandIns tells whether the peers with names of a server reach internet addresses through stand-in addresses
+func usesStandIns(state State, server Server) bool {
+	return state.StandInNetwork.IsValid() && state.StandInNetwork.Addr().Is4() && server.StandIns && hasNames(server)
+}
+
+// standInElements are the elements of the map of the stand-in addresses: "stand-in : internet address", each
+// stand-in address once
+func standInElements(state State) string {
+	var elements []string
+	seen := map[netip.Addr]bool{}
+	for _, standIn := range state.StandIns {
+		if !standIn.Address.Is4() || !standIn.Real.Is4() || !state.StandInNetwork.Contains(standIn.Address) || seen[standIn.Address] {
+			continue
+		}
+		seen[standIn.Address] = true
+		elements = append(elements, standIn.Address.String()+" : "+standIn.Real.String())
+	}
+	return strings.Join(elements, ", ")
+}
+
+// StandInCommand returns the nftables command that adds a stand-in address and where it leads, or removes it
+func StandInCommand(add bool, standIn StandIn) string {
+	if add {
+		return fmt.Sprintf("add element inet %s %s { %s : %s }", Table, StandInMap, standIn.Address, standIn.Real)
+	}
+	return fmt.Sprintf("delete element inet %s %s { %s }", Table, StandInMap, standIn.Address)
+}
+
 // Ruleset returns the nftables script that replaces the table at once: the old rules stay until the new ones are
 // all in, so there is never a moment without the gate. The sessions are in the script, so they stay too.
 //
@@ -129,13 +161,16 @@ func Ruleset(state State) string {
 		}
 		line(1, "}")
 	}
-	redirecting, resolving := false, false
+	redirecting, resolving, standingIn := false, false, false
 	for _, server := range state.Servers {
 		if server.Gated && server.Redirect {
 			redirecting = true
 		}
 		if state.ResolverPort > 0 && hasNames(server) {
 			resolving = true
+		}
+		if usesStandIns(state, server) {
+			standingIn = true
 		}
 	}
 
@@ -164,6 +199,14 @@ func Ruleset(state State) string {
 				set(LearnedSet(server.Interface, true), "ipv6_addr . ipv6_addr", learnedElements(server, true))
 			}
 		}
+	}
+	if standingIn {
+		line(1, "map %s {", StandInMap)
+		line(2, "type ipv4_addr : ipv4_addr")
+		if elements := standInElements(state); elements != "" {
+			line(2, "elements = { %s }", elements)
+		}
+		line(1, "}")
 	}
 
 	// to the server itself
@@ -214,8 +257,9 @@ func Ruleset(state State) string {
 	line(1, "}")
 
 	// before the routing: the redirects of the peers that aren't logged in, and the DNS queries of the peers with names
-	// that are, to any server, to Authway Server
-	if redirecting || resolving {
+	// that are, to any server, to Authway Server; their connections to the stand-in addresses they learned, to the
+	// internet addresses behind them
+	if redirecting || resolving || standingIn {
 		line(1, "chain prerouting {")
 		line(2, "type nat hook prerouting priority dstnat; policy accept;")
 		for _, server := range state.Servers {
@@ -241,6 +285,14 @@ func Ruleset(state State) string {
 					line(2, "%s udp dport 53 redirect to :%d", match, state.ResolverPort)
 					line(2, "%s tcp dport 53 redirect to :%d", match, state.ResolverPort)
 				}
+			}
+		}
+		// marked like the connections to the other learned addresses: they stay open when the stand-in address expires
+		for _, server := range state.Servers {
+			if usesStandIns(state, server) {
+				line(2, "iifname %q%s ip daddr %s ip saddr . ip daddr @%s ct mark set 0x%08x dnat ip to ip daddr map @%s",
+					server.Interface, loggedIn(server, ipFamily{"ip", false}), state.StandInNetwork.Masked(),
+					LearnedSet(server.Interface, false), LearnedMark, StandInMap)
 			}
 		}
 		line(1, "}")
@@ -340,6 +392,10 @@ func Ruleset(state State) string {
 		}
 		// no other traffic between the peers, nor to the other tunnels
 		line(2, `oifname "wg*" drop`)
+		if usesStandIns(state, server) {
+			// a stand-in address that wasn't translated leads nowhere for this peer: not out to the internet as it is
+			line(2, "ip daddr %s drop", state.StandInNetwork.Masked())
+		}
 		limitedRules(server, line)
 		line(2, "ip saddr @%s accept", routeAllSet(server.Interface))
 		if server.IPv6() {

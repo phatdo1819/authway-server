@@ -23,6 +23,13 @@
   Go 1.27 has no `io/ioutil`; `go.mod` replaces the module with it until a release builds.
 - `internal/system`: the System page: the resources of the host and their history, the checks, the latest lines of
   the log.
+- `internal/names`: the names of the access rules, the DNS answers that give their addresses, and the queries that
+  Authway Server sends to the DNS servers, for the peers and for the names it looks up itself.
+- `internal/peerconf`: the configuration file of a peer, with the comments that Authway reads: `# Name`, `# Login`,
+  `# NameRoutes` and `# Fallback`.
+- `internal/hostroute`: the route through the Docker host to the tunnels of the routed servers on a Docker bridge.
+- `internal/secret`: the password hashes and the random tokens.
+- `internal/totp`: the codes of the authenticator apps (RFC 6238).
 
 ## The network of the container
 
@@ -396,8 +403,9 @@ server.
 A rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under `corp.lan` at any depth (not
 `corp.lan` itself): `internal/names`, letters, digits, hyphens and underscores, two labels at least for a name alone,
 kept in lowercase in `peers.access` with the other rules (no schema change; an older version skips them, so the peer
-reaches less, never more). A server without networks refuses them (`outside`). The addresses of a name aren't known in
-advance, so they're learned from the DNS answers of the peer:
+reaches less, never more). A server without networks takes names alone, for their internet addresses, and refuses
+addresses and networks (`names_only`). The addresses of a name aren't known in advance, so they're learned from the
+DNS answers of the peer:
 
 - **Its DNS goes to Authway Server.** Its configuration file has `DNS = <the server's address>` (and the IPv6 one),
   and routes all the networks of the server, as without rules: the firewall does the narrowing. Once it's logged in
@@ -415,6 +423,52 @@ advance, so they're learned from the DNS answers of the peer:
   plus `LearnedMargin` (10 minutes), a day at most; a new answer extends it. 1024 addresses per peer at most. They're
   kept in memory, written in each ruleset, and added (`add element`) or removed at the `Tick` after they expire
   (`delete element`) between two.
+- **Exact names looked up by Authway Server** (`core/lookups.go`): `files.corp.lan`, not `*.corp.lan`, whose names it
+  can't list. For the peers the resolver answers, every 30 seconds (`LookupInterval`) and at once after a login, a
+  resumed session or an apply, it asks the DNS servers of their server for each exact name due, A and, for a server
+  with IPv6 networks, AAAA, over UDP (TCP when the reply is cut), 8 at once, and learns the answer for each of those
+  peers like one of their own, but only the addresses inside the networks: the internet ones work only through the
+  answer the device gets. A name is due again when its shortest time to live runs out, 30 seconds to an hour
+  (`LookupMin`, `LookupMax`), or a minute after a failure or an answer without an address (`LookupRetry`); until
+  then, each round learns the answer it has, for the time it has left, so a peer that logs in gets it at once.
+  After a failure the answer before stays until its time to live runs out; three in a row log a warning. Only the
+  A query counts: a DNS server that never answers AAAA still gives the IPv4 addresses (`lookUpName`). A change
+  of the DNS servers or the networks of a server forgets its names, a restore all of them, and the lookups under
+  way then keep nothing (`lookupsReset`). A device that kept an answer, an app that keeps an address for hours, or a
+  browser asking DNS over HTTPS reaches the exact names this way.
+- **Across restarts** (`core/namessaved.go`): the learned and stand-in addresses are kept in the meta key `names`
+  too (JSON, no schema change, not in the backups), written at the first `Tick` a minute or more after a change
+  (`NamesSaveInterval`), at once after a restore, and when Authway Server stops (`Service.Close`). At the start,
+  `New` reads what still holds, before the first apply: the addresses whose time isn't up, of a peer and a server
+  whose id, creation and version are the same (a version that doesn't know the key, after a downgrade, changes them
+  without forgetting; a new peer can get the id of a deleted one), inside the networks of now, the stand-in
+  addresses of the same stand-in network, and the internet addresses routed by the app. An apply marks them
+  changed, so the versions written follow the changes that keep them.
+- **Internet names** (`-stand-in-network`, `AUTHWAY_STAND_IN_NETWORK`: 198.18.0.0/16 by default, an IPv4 network from
+  /8 to /24, or `off`): a configuration file routes only networks known in advance, so for a peer that doesn't send
+  all its traffic through the tunnel, each IPv4 internet address of its names gets a stand-in address from that
+  network, which its file routes through the tunnel too. The answer to the device has the stand-in address instead,
+  with the same time to live, learned like an address inside the networks; the IPv6 internet addresses go from the
+  answer, so the device takes the IPv4 ones. The HTTPS and SVCB records of its names go too, whatever their addresses:
+  their hints would skip the stand-in addresses. "Internet" is global unicast, not private, and none of 0.0.0.0/8,
+  100.64.0.0/10, 192.0.0.0/24, 198.18.0.0/15 or 240.0.0.0/4; a private address outside the networks is left in the
+  answer and not learned. A stand-in address stands for one internet address, for every peer of every server: an
+  FNV-1a hash of the address picks it, or the next free one after it (never .0 or .255), so a restart gives the same
+  ones unless another address took one first. It keeps its internet address `StandInGrace` (a day) after the last
+  peer that could use it, so a device that keeps an answer too long still reaches the same site. When they're all
+  taken, the new internet addresses go to the device as they are, with a warning. The VPN network and the networks of
+  a server can't overlap them (`overlaps_stand_ins`); a server whose networks already do (the setting changed) gets
+  none, with a warning at start.
+- **The Authway app** routes the internet addresses of the names itself, with their real addresses. The file of a
+  peer with names, unless it sends all its traffic, has `# NameRoutes = 1` (`peerconf`); the app then answers the
+  DNS of the computer itself and asks Authway Server with the EDNS option `names.RoutesOption` (65430, a code for
+  local use) in its queries. The resolver takes the option out before the query goes to the DNS servers, and out of
+  their answers too: only Authway Server gives routes. For such a query, an internet address of a name stays as it is,
+  learned for the peer like an address inside the networks (an IPv6 one only when the tunnel carries IPv6, otherwise
+  it goes from the answer), no stand-in address, and the answer lists the addresses to route in the same option: for
+  each one, 4 or 6, the address, then the seconds it stays open on 4 bytes. Before the computer gets the answer, the
+  app adds each one to the allowed IPs of the server in its WireGuard and a route of it through the tunnel. The file
+  keeps the stand-in network for the other apps, and for the Authway app when its DNS server can't start.
 - **The firewall**, for a server with such peers: the sets `<wg>_learned` (`ipv4_addr . ipv4_addr`) and
   `<wg>_learned6`, of `peer . address`; in the chain of the server, before the drops of the peers with rules:
 
@@ -424,16 +478,30 @@ advance, so they're learned from the DNS answers of the peer:
   ```
 
   so a connection opened while the address was learned stays open after it expires, as long as the session does.
-  With `inbound`, `ip daddr . ip saddr @<wg>_learned` also lets those addresses start connections to the peer.
+  With `inbound`, `ip daddr . ip saddr @<wg>_learned` also lets those addresses start connections to the peer. With
+  stand-in addresses, the map `stand_ins` (`ipv4_addr : ipv4_addr`, stand-in to internet address, for all the
+  servers), and in `prerouting`, after the redirects:
+
+  ```
+  iifname "<wg>" ip saddr @<wg>_sessions ip daddr <stand-ins> ip saddr . ip daddr @<wg>_learned ct mark set 0x00415701 dnat ip to ip daddr map @stand_ins
+  ```
+
+  (without `ip saddr @<wg>_sessions` on a server without a login). The chain of the server drops `ip daddr
+  <stand-ins>` before the rules of its peers, so a stand-in address that wasn't translated goes nowhere, and accepts
+  the translated connections by their mark; `postrouting` sends them out with the address of the container, like the
+  rest of the tunnel, routed server or not.
 - **Changes**: when the rules of a peer with names change, it's disabled or gets another user, or the networks of its
   server change, what it learned is forgotten and its marked connections are deleted from conntrack
   (`conntrack -D -s <peer> -m 0x00415701`), so the next packet goes through the rules of now; a restore deletes
   them all. A new or deleted peer, and new keys, forget too.
 
-What this can't do: names whose addresses are outside the networks of the server (the internet, for a peer that sends
-all its traffic, follows the other rules: open with `route_all`); queries the device sends another way (DNS over
-HTTPS or TLS): their names aren't learned, so they're blocked, not let through. A wildcard covers every name that can
-be created under it: in Active Directory, any user can register one by default. Backups of version 7 have them.
+What this can't do: queries the device sends another way (DNS over HTTPS or TLS) teach nothing, so the names of a
+wildcard inside the networks stay blocked (the exact names are looked up by the server) and their internet names go
+out directly, not through the server. Without the Authway app, an internet name goes through the server over IPv4
+only, and the device sees its stand-in address (in `ping`, say). Sites that share an address, behind a CDN, share its
+stand-in address too: a peer allowed one of them reaches the others behind it through the server. A wildcard covers
+every name that can be created under it: in Active Directory, any user can register one by default. Backups of
+version 7 have them.
 
 ## Connection history
 

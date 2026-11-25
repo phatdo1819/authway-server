@@ -27,6 +27,8 @@ type Fake struct {
 	// the learned addresses, by interface, and the peers whose connections to them were closed
 	Learned   map[string]map[Learned]bool
 	Forgotten []netip.Addr
+	// the stand-in addresses, and the internet addresses they lead to
+	StandIns map[netip.Addr]netip.Addr
 	// see SetLive
 	Live      netip.Addr
 	liveSince time.Time
@@ -34,7 +36,7 @@ type Fake struct {
 
 func NewFake() *Fake {
 	return &Fake{Sessions: map[string]map[netip.Addr]bool{}, Peers: map[wgtypes.Key]PeerStats{},
-		Learned: map[string]map[Learned]bool{}}
+		Learned: map[string]map[Learned]bool{}, StandIns: map[netip.Addr]netip.Addr{}}
 }
 
 func (f *Fake) Apply(state State) error {
@@ -66,7 +68,40 @@ func (f *Fake) Apply(state State) error {
 		}
 		f.Learned[server.Interface] = learned
 	}
+	f.StandIns = map[netip.Addr]netip.Addr{}
+	for _, standIn := range state.StandIns {
+		f.StandIns[standIn.Address] = standIn.Real
+	}
 	return f.ApplyError
+}
+
+func (f *Fake) AddStandIns(standIns ...StandIn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, standIn := range standIns {
+		f.StandIns[standIn.Address] = standIn.Real
+	}
+	return nil
+}
+
+func (f *Fake) RemoveStandIns(standIns ...StandIn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, standIn := range standIns {
+		delete(f.StandIns, standIn.Address)
+	}
+	return nil
+}
+
+// ReachesThrough tells which internet address a peer reaches through a stand-in address on an interface: invalid
+// when it can't use it.
+func (f *Fake) ReachesThrough(iface string, peer, standIn netip.Addr) netip.Addr {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.Learned[iface][Learned{Peer: peer, Address: standIn}] {
+		return netip.Addr{}
+	}
+	return f.StandIns[standIn]
 }
 
 func (f *Fake) AddLearned(iface string, learned ...Learned) error {

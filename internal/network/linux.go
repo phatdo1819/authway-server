@@ -296,6 +296,37 @@ func (l *Linux) RemoveLearned(iface string, learned ...Learned) error {
 	return errors.Join(errs...)
 }
 
+// AddStandIns adds stand-in addresses to their map: one nftables transaction.
+func (l *Linux) AddStandIns(standIns ...StandIn) error {
+	var script strings.Builder
+	for _, standIn := range standIns {
+		script.WriteString(StandInCommand(true, standIn) + "\n")
+	}
+	if script.Len() == 0 {
+		return nil
+	}
+	return run(script.String(), "nft", "-f", "-")
+}
+
+// RemoveStandIns removes stand-in addresses in one transaction, or one by one when one of them is already gone.
+func (l *Linux) RemoveStandIns(standIns ...StandIn) error {
+	var script strings.Builder
+	for _, standIn := range standIns {
+		script.WriteString(StandInCommand(false, standIn) + "\n")
+	}
+	if script.Len() == 0 || run(script.String(), "nft", "-f", "-") == nil {
+		return nil
+	}
+	var errs []error
+	for _, standIn := range standIns {
+		err := run(StandInCommand(false, standIn)+"\n", "nft", "-f", "-")
+		if err != nil && !strings.Contains(err.Error(), "No such file or directory") {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // ForgetLearned deletes the conntrack entries of the connections of peers marked by a learned address, of all the
 // peers without addresses: the next packet goes through the rules of now.
 func (l *Linux) ForgetLearned(addresses ...netip.Addr) error {

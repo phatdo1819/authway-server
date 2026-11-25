@@ -20,6 +20,11 @@ type State struct {
 	// the DNS queries (UDP and TCP 53) of the peers with names in their access rules go to this port, once they're
 	// logged in: Authway Server asks the DNS servers for them, and lets them reach the addresses of those names
 	ResolverPort int
+	// the addresses that stand in for the internet addresses of names, in the answers to the peers with names of the
+	// servers with StandIns: the peers connect to them through the tunnel, and the server sends the connections on to
+	// the internet addresses, with its own address. Invalid: none
+	StandInNetwork netip.Prefix
+	StandIns       []StandIn
 }
 
 type Server struct {
@@ -52,6 +57,9 @@ type Server struct {
 	Inbound bool
 	// the DNS servers of the peers: the peers with access rules reach them on port 53, wherever they are
 	DNS []netip.Addr
+	// its peers with names reach the internet addresses of their names through the stand-in addresses of
+	// State.StandInNetwork, learned like the others
+	StandIns bool
 }
 
 // IPv6 tells whether the tunnel of the server carries IPv6.
@@ -70,7 +78,8 @@ type Peer struct {
 	// of them. With RouteAll, the peer also reaches the internet, but no other private network
 	Access []netip.Prefix
 	// names in the access rules: its DNS queries go to Authway Server, and it also reaches Learned, the addresses
-	// those names had in the answers, inside Networks of its server. Only with Access
+	// those names had in the answers, inside Networks of its server, and the stand-in addresses of their internet
+	// addresses. Only with Access
 	Names   bool
 	Learned []netip.Addr
 }
@@ -90,6 +99,12 @@ type Learned struct {
 // LearnedMark is the conntrack mark of the connections opened to a learned address: they stay open when the address
 // expires, as long as the session does, and until the access rules of the peer change.
 const LearnedMark = 0x00415701
+
+// StandIn is an address of State.StandInNetwork, and the internet address that the connections to it go to.
+type StandIn struct {
+	Address netip.Addr
+	Real    netip.Addr
+}
 
 // PeerStats is what WireGuard knows of a peer.
 type PeerStats struct {
@@ -120,6 +135,9 @@ type Network interface {
 	// ForgetLearned closes the connections of peers to the addresses they learned, of all of them without addresses:
 	// their access rules changed.
 	ForgetLearned(addresses ...netip.Addr) error
+	// AddStandIns and RemoveStandIns set where stand-in addresses lead, or no longer, between two Apply.
+	AddStandIns(standIns ...StandIn) error
+	RemoveStandIns(standIns ...StandIn) error
 	// Stats returns the peers of all the interfaces, by public key.
 	Stats() (map[wgtypes.Key]PeerStats, error)
 	// IPv6 says why the tunnels can't have IPv6 addresses, nil when they can.

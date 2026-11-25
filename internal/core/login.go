@@ -356,6 +356,8 @@ func (s *Service) openSessionLocked(server *store.Server, peer *store.Peer, user
 			return 0, err
 		}
 	}
+	// the exact names of its rules, at once: its device may connect with the answers it kept
+	s.wakeLookups()
 	return expires, nil
 }
 

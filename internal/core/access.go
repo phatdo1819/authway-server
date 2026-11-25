@@ -8,7 +8,8 @@ import (
 	"github.com/phatdo1819/authway-server/internal/store"
 )
 
-// The access rules of a peer: the networks it reaches, inside the networks of its server, instead of all of them.
+// The access rules of a peer: the networks it reaches, inside the networks of its server, instead of all of them, and
+// names (see names.go), the only rules of a server without networks.
 // The firewall of the container enforces them, whatever the configuration file says, with NAT and routed alike. A
 // peer with rules that sends all its traffic through the tunnel also reaches the internet, but no other private
 // network. Its configuration file routes only its own networks, and the DNS servers of the server inside the
@@ -35,19 +36,20 @@ func checkAccess(input *[]string, current []string, server *store.Server, c *che
 		}
 		prefix, ok := parseAccess(text)
 		if !ok {
-			// a name, files.corp.lan or *.corp.lan: its addresses are learned inside the networks of the server
+			// a name, files.corp.lan or *.corp.lan: its addresses are learned inside the networks of the server, and
+			// on the internet. A server without networks takes names too, for the internet ones
 			rule, ok := names.Parse(text)
 			switch {
 			case !ok:
 				c.fail("access", "invalid")
-			case len(networks) == 0:
-				c.fail("access", "outside")
 			case !containsText(entries, rule.String()):
 				entries = append(entries, rule.String())
 			}
 			continue
 		}
 		switch {
+		case len(networks) == 0:
+			c.fail("access", "names_only")
 		case !insideAny(prefix, networks):
 			c.fail("access", "outside")
 		case overlapsAny(prefix, list):

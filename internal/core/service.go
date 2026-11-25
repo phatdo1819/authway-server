@@ -5,6 +5,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -141,6 +142,12 @@ type Options struct {
 	// the DNS servers they're sent on to: 53, another in the tests
 	ResolverPort int
 	UpstreamPort int
+	// the addresses that stand in for the internet addresses of the names in the access rules, IPv4 from /8 to /24:
+	// see names.go. Invalid: none, the names reach only their addresses inside the networks of the servers
+	StandIns netip.Prefix
+	// sends a DNS query to a DNS server and returns its reply, for the exact names of the access rules that Authway
+	// Server looks up itself (see lookups.go): names.Ask. Nil: no lookups
+	Lookup func(ctx context.Context, server netip.AddrPort, query []byte) ([]byte, error)
 	// the public name or address of this server, the default for new WireGuard servers
 	PublicHost string
 	// the version of Authway Server, written in the backups
@@ -214,6 +221,22 @@ type Service struct {
 	directoryWake   chan struct{}
 	// the addresses the peers with names learned from their DNS answers, by peer: see names.go
 	learned map[int64]*learnedPeer
+	// the stand-in addresses of the internet addresses of names, by stand-in address and by internet address, and a
+	// warning when they were all taken, once
+	standIns     map[netip.Addr]*standIn
+	standInOf    map[netip.Addr]netip.Addr
+	standInsFull bool
+	// the learned and stand-in addresses saved for a restart: changed since, when they were last written, and what
+	// was (see namessaved.go)
+	namesChanged bool
+	namesSavedAt time.Time
+	namesSaved   string
+	// the exact names of the access rules that Authway Server looks up itself, by server, and a request for a round at
+	// once; a restore or a change of the DNS servers counts in lookupsReset, so that lookups started before it don't
+	// keep their answers (see lookups.go)
+	lookups      map[lookupKey]*lookup
+	lookupWake   chan struct{}
+	lookupsReset uint64
 }
 
 // New ends the sessions that can't go on and applies the configuration.
@@ -261,6 +284,10 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 		counters:       map[int64]peerCounters{},
 		directoryWake:  make(chan struct{}, 1),
 		learned:        map[int64]*learnedPeer{},
+		standIns:       map[netip.Addr]*standIn{},
+		standInOf:      map[netip.Addr]netip.Addr{},
+		lookups:        map[lookupKey]*lookup{},
+		lookupWake:     make(chan struct{}, 1),
 	}
 	if opts.HostRoutes != "" {
 		s.hostReader = hostroute.NewReader(opts.HostRoutes)
@@ -268,12 +295,27 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadUsedCodesLocked()
+	s.loadNamesLocked()
 	if err := s.checkSessionsLocked(EndServerChanged); err != nil {
 		return nil, err
 	}
 	// the interfaces are new: their counters start again, the connections of before ended
 	if err := db.Q().EndOpenConnections(); err != nil {
 		return nil, err
+	}
+	if validStandIns(opts.StandIns) {
+		// a server that had its networks before the stand-in addresses changed: its peers reach no internet name
+		if servers, err := db.Q().Servers(); err == nil {
+			for index := range servers {
+				if !s.standInsOn(&servers[index]) {
+					s.log.Warn("the networks of a server overlap the stand-in addresses of internet names: its peers with names reach only the names inside its networks",
+						"server", servers[index].Name, "stand_ins", opts.StandIns)
+				}
+			}
+		}
+	} else if opts.StandIns.IsValid() {
+		s.log.Warn("the stand-in addresses of internet names must be an IPv4 network from /8 to /24: the peers reach no internet name",
+			"stand_ins", opts.StandIns)
 	}
 	s.applyLocked()
 	return s, nil
@@ -284,12 +326,28 @@ func (s *Service) LoginPort() int {
 	return s.opts.LoginPort
 }
 
+// Close writes what only memory holds and a restart must find: the addresses learned for the names. Authway Server
+// calls it when it stops.
+func (s *Service) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.namesChanged {
+		s.saveNamesLocked()
+	}
+}
+
 // applyLocked puts the configuration of the database on the system. A failure is kept for the web UI: the rest of
 // the configuration still works, and the monitor tries again every few seconds. A warning is kept for the System
 // page only: everything is set and works, so it's neither a failure nor tried again before the next change.
 func (s *Service) applyLocked() {
 	s.syncDevicesLocked()
 	defer s.syncHostRoutesLocked()
+	// the names to look up may have changed with the configuration, and the versions of the peers and servers that the
+	// saved addresses keep
+	s.wakeLookups()
+	if len(s.learned) > 0 {
+		s.namesChanged = true
+	}
 	state, err := s.stateLocked()
 	if err == nil {
 		err = s.net.Apply(state)
@@ -320,6 +378,10 @@ func (s *Service) stateLocked() (network.State, error) {
 	q := s.db.Q()
 	state := network.State{LoginPort: s.opts.LoginPort, RedirectPort: s.opts.RedirectPort, DNSPort: s.opts.DNSPort,
 		ResolverPort: s.opts.ResolverPort}
+	if validStandIns(s.opts.StandIns) {
+		state.StandInNetwork = s.opts.StandIns.Masked()
+		state.StandIns = s.standInListLocked()
+	}
 	servers, err := q.Servers()
 	if err != nil {
 		return state, err
@@ -360,6 +422,7 @@ func (s *Service) stateLocked() (network.State, error) {
 			ClientToClient: server.ClientToClient,
 			Routed:         server.Routed,
 			Inbound:        server.Routed && server.Inbound,
+			StandIns:       s.standInsOn(&server),
 		}
 		tunnel6 := tunnel6Of(&server)
 		if tunnel6.IsValid() {

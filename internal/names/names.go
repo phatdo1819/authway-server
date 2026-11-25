@@ -3,6 +3,7 @@
 package names
 
 import (
+	"encoding/binary"
 	"math"
 	"net/netip"
 	"regexp"
@@ -184,6 +185,179 @@ func Answer(reply []byte) (string, []Address, bool) {
 		}
 	}
 	return asked, addresses, true
+}
+
+// RoutesOption is the EDNS option of the Authway app (a code for local use, RFC 6891). In a query, empty: the device
+// routes the internet addresses of the names through the tunnel itself, so the answer keeps them as they are. In the
+// answer, the addresses to route and for how long: for each one, 4 or 6, the address, then the seconds on 4 bytes.
+const RoutesOption = 65430
+
+// TakeRoutes tells whether a query asks for the routes of its answer, and returns it without the option, as the DNS
+// servers get it: the query as it was when it doesn't ask.
+func TakeRoutes(query []byte) ([]byte, bool) {
+	var message dnsmessage.Message
+	if err := message.Unpack(query); err != nil || !dropRoutes(&message) {
+		return query, false
+	}
+	data, err := message.Pack()
+	if err != nil {
+		// the DNS servers ignore an option they don't know
+		return query, true
+	}
+	return data, true
+}
+
+// WithoutRoutes is a reply without RoutesOption: only Authway Server gives the device routes, never another DNS
+// server. The reply as it was when it has none.
+func WithoutRoutes(reply []byte) []byte {
+	var message dnsmessage.Message
+	if err := message.Unpack(reply); err != nil || !dropRoutes(&message) {
+		return reply
+	}
+	if data, err := message.Pack(); err == nil {
+		return data
+	}
+	return reply
+}
+
+// dropRoutes takes RoutesOption out of a message: true when it had it
+func dropRoutes(message *dnsmessage.Message) bool {
+	found := false
+	for _, record := range message.Additionals {
+		opt, ok := record.Body.(*dnsmessage.OPTResource)
+		if !ok {
+			continue
+		}
+		kept := opt.Options[:0]
+		for _, option := range opt.Options {
+			if option.Code == RoutesOption {
+				found = true
+				continue
+			}
+			kept = append(kept, option)
+		}
+		opt.Options = kept
+	}
+	return found
+}
+
+// routesData is the data of RoutesOption in an answer
+func routesData(routes []Address) []byte {
+	var data []byte
+	for _, route := range routes {
+		seconds := int64(route.TTL / time.Second)
+		seconds = min(max(seconds, 1), math.MaxUint32)
+		if route.Addr.Is4() {
+			address := route.Addr.As4()
+			data = append(append(data, 4), address[:]...)
+		} else {
+			address := route.Addr.As16()
+			data = append(append(data, 6), address[:]...)
+		}
+		data = binary.BigEndian.AppendUint32(data, uint32(seconds))
+	}
+	return data
+}
+
+// Routes reads the routes of an answer, as the Authway app does: none without RoutesOption.
+func Routes(reply []byte) []Address {
+	var message dnsmessage.Message
+	if err := message.Unpack(reply); err != nil {
+		return nil
+	}
+	var routes []Address
+	for _, record := range message.Additionals {
+		opt, ok := record.Body.(*dnsmessage.OPTResource)
+		if !ok {
+			continue
+		}
+		for _, option := range opt.Options {
+			data := option.Data
+			for option.Code == RoutesOption && len(data) > 0 {
+				size := map[byte]int{4: 4, 6: 16}[data[0]]
+				if size == 0 || len(data) < 1+size+4 {
+					break
+				}
+				address, _ := netip.AddrFromSlice(data[1 : 1+size])
+				seconds := binary.BigEndian.Uint32(data[1+size:])
+				routes = append(routes, Address{Addr: address, TTL: time.Duration(seconds) * time.Second})
+				data = data[1+size+4:]
+			}
+		}
+	}
+	return routes
+}
+
+// Rewrite changes the addresses of a reply: each A or AAAA record whose address is a key of change gets the address
+// it maps to, of the same version, or goes when that one is invalid. The HTTPS and SVCB records go too, whatever
+// change holds: their hints would give the device addresses that the rest of the reply doesn't. With routes, the
+// reply tells the Authway app which addresses to route through the tunnel, in RoutesOption. The reply as it was when
+// nothing changes; false when it can't be read or written again.
+func Rewrite(reply []byte, change map[netip.Addr]netip.Addr, routes []Address) ([]byte, bool) {
+	var message dnsmessage.Message
+	if err := message.Unpack(reply); err != nil {
+		return nil, false
+	}
+	changed := dropRoutes(&message)
+	edit := func(records []dnsmessage.Resource) []dnsmessage.Resource {
+		kept := records[:0]
+		for _, record := range records {
+			switch body := record.Body.(type) {
+			case *dnsmessage.AResource:
+				if to, ok := change[netip.AddrFrom4(body.A)]; ok {
+					changed = true
+					if !to.Is4() {
+						continue
+					}
+					body.A = to.As4()
+				}
+			case *dnsmessage.AAAAResource:
+				if to, ok := change[netip.AddrFrom16(body.AAAA)]; ok {
+					changed = true
+					if !to.Is6() || to.Is4In6() {
+						continue
+					}
+					body.AAAA = to.As16()
+				}
+			case *dnsmessage.HTTPSResource, *dnsmessage.SVCBResource:
+				changed = true
+				continue
+			}
+			kept = append(kept, record)
+		}
+		return kept
+	}
+	message.Answers = edit(message.Answers)
+	message.Authorities = edit(message.Authorities)
+	message.Additionals = edit(message.Additionals)
+	if len(routes) > 0 {
+		var opt *dnsmessage.OPTResource
+		for _, record := range message.Additionals {
+			if found, ok := record.Body.(*dnsmessage.OPTResource); ok {
+				opt = found
+				break
+			}
+		}
+		if opt == nil {
+			// the query of the app has one: a DNS server that doesn't know EDNS answers without it
+			var header dnsmessage.ResourceHeader
+			if err := header.SetEDNS0(1232, dnsmessage.RCodeSuccess, false); err != nil {
+				return nil, false
+			}
+			opt = &dnsmessage.OPTResource{}
+			message.Additionals = append(message.Additionals, dnsmessage.Resource{Header: header, Body: opt})
+		}
+		opt.Options = append(opt.Options, dnsmessage.Option{Code: RoutesOption, Data: routesData(routes)})
+		changed = true
+	}
+	if !changed {
+		return reply, true
+	}
+	data, err := message.Pack()
+	if err != nil {
+		return nil, false
+	}
+	return data, true
 }
 
 // Refused is the reply that says a query can't be answered now (SERVFAIL), for a query whose DNS servers didn't

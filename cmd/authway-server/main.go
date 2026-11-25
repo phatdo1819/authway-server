@@ -26,6 +26,7 @@ import (
 	"github.com/phatdo1819/authway-server/internal/core"
 	"github.com/phatdo1819/authway-server/internal/directory"
 	"github.com/phatdo1819/authway-server/internal/hostroute"
+	"github.com/phatdo1819/authway-server/internal/names"
 	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/portal"
 	"github.com/phatdo1819/authway-server/internal/secret"
@@ -46,6 +47,7 @@ type config struct {
 	redirectPort  int
 	dnsPort       int
 	resolverPort  int
+	standIns      netip.Prefix
 	publicHost    string
 	logLevel      string
 	fakeNetwork   bool
@@ -88,6 +90,7 @@ func parseConfig(args []string) (config, bool, error) {
 	flags.IntVar(&c.redirectPort, "redirect-port", envInt("AUTHWAY_REDIRECT_PORT", 8180), "where the web requests of the peers not logged in are redirected (AUTHWAY_REDIRECT_PORT)")
 	flags.IntVar(&c.dnsPort, "dns-port", envInt("AUTHWAY_DNS_PORT", 8153), "where the DNS queries of the peers not logged in are redirected (AUTHWAY_DNS_PORT)")
 	flags.IntVar(&c.resolverPort, "resolver-port", envInt("AUTHWAY_RESOLVER_PORT", 8154), "where the DNS queries of the peers with names in their access rules go once they are logged in (AUTHWAY_RESOLVER_PORT)")
+	standIns := flags.String("stand-in-network", env("AUTHWAY_STAND_IN_NETWORK", core.DefaultStandIns), "the addresses that stand in for the internet addresses of the names in access rules, an IPv4 network from /8 to /24 that no device uses, or off (AUTHWAY_STAND_IN_NETWORK)")
 	flags.StringVar(&c.publicHost, "public-host", env("AUTHWAY_PUBLIC_HOST", ""), "the public name or IP of this server, the default for new WireGuard servers (AUTHWAY_PUBLIC_HOST)")
 	flags.StringVar(&c.logLevel, "log-level", env("AUTHWAY_LOG_LEVEL", "info"), "debug, info, warn or error (AUTHWAY_LOG_LEVEL)")
 	flags.StringVar(&c.hostRoutes, "host-routes", env("AUTHWAY_HOST_ROUTES", ""), "the folder shared with the helper of compose.host-routes.yaml, which routes the tunnels of the routed servers through the Docker host (AUTHWAY_HOST_ROUTES)")
@@ -101,6 +104,13 @@ func parseConfig(args []string) (config, bool, error) {
 	var err error
 	if c.proxies, err = parsePrefixes("-trusted-proxies", *proxies); err != nil {
 		return c, false, err
+	}
+	if text := strings.TrimSpace(*standIns); text != "off" {
+		prefix, err := netip.ParsePrefix(text)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 8 || prefix.Bits() > 24 {
+			return c, false, fmt.Errorf("-stand-in-network: %q is not an IPv4 network from /8 to /24, nor off", text)
+		}
+		c.standIns = prefix.Masked()
 	}
 	if *showVersion {
 		fmt.Println("authway-server", version)
@@ -348,7 +358,8 @@ func run(args []string) int {
 	}
 	service, err := core.New(db, net, core.Options{
 		LoginPort: c.loginPort, RedirectPort: c.redirectPort, DNSPort: c.dnsPort, ResolverPort: c.resolverPort, PublicHost: c.publicHost,
-		Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes, Directory: directory.LDAP{},
+		StandIns: c.standIns, Lookup: names.Ask, Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes,
+		Directory: directory.LDAP{},
 	})
 	if err != nil {
 		log.Error("can't start", "error", err)
@@ -470,6 +481,8 @@ func run(args []string) int {
 	loginServer.Shutdown(shutdown)
 	redirectServer.Shutdown(shutdown)
 	adminServer.Shutdown(shutdown)
+	// what a restart must find and only memory holds
+	service.Close()
 	return code
 }
 

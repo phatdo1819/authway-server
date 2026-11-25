@@ -1,7 +1,8 @@
 // Package peerconf writes the WireGuard configuration file of a peer.
 //
-// The comments "# Name =", "# Login =" and "# Fallback =" are read by Authway: the name of the VPN, the login page
-// and the other addresses of the server. The other WireGuard apps ignore them.
+// The comments "# Name =", "# Login =", "# NameRoutes =" and "# Fallback =" are read by Authway: the name of the
+// VPN, the login page, the names of its access rules that the app routes itself (see names.RoutesOption) and the
+// other addresses of the server. The other WireGuard apps ignore them.
 package peerconf
 
 import (
@@ -22,6 +23,9 @@ type Config struct {
 	MTU      int
 	// the login page, "" when the server needs none
 	Login string
+	// names in its access rules: the Authway app asks the DNS servers of the file itself, and routes the internet
+	// addresses of the names through the tunnel, as the answers say
+	NameRoutes bool
 
 	ServerPublicKey string
 	PresharedKey    string
@@ -80,6 +84,9 @@ func (c *Config) String() string {
 	line("# Name = %s", oneLine(c.PeerName))
 	if c.Login != "" {
 		line("# Login = %s", c.Login)
+	}
+	if c.NameRoutes {
+		line("# NameRoutes = 1")
 	}
 	line("PrivateKey = %s", c.PrivateKey)
 	if c.Address6.IsValid() {

@@ -193,3 +193,10 @@ export function address6Of(address: string, network: string, network6: string): 
   masked[7] = (masked[7] ?? 0) | offset
   return formatIPv6(masked)
 }
+
+// isName tells whether an access rule is a name, files.corp.lan or *.corp.lan: neither an IPv4 address or network
+// (digits, dots and a slash) nor an IPv6 one
+export function isName(entry: string): boolean {
+  const text = entry.trim()
+  return text !== '' && !text.includes(':') && !/^[\d./]+$/.test(text)
+}

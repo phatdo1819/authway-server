@@ -170,7 +170,7 @@ func (s *Service) DeletePeer(by Actor, id int64) error {
 		return notFound(err)
 	}
 	delete(s.counters, id)
-	delete(s.learned, id)
+	s.dropLearnedLocked(id)
 	s.log.Info("peer deleted", "peer", peer.Name, "address", peer.Address)
 	s.changeLocked(by, store.Event{Kind: "peer_deleted", ServerName: serverName, PeerName: peer.Name, Username: username,
 		Detail: peer.Address})
@@ -271,6 +271,10 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 		if tunnel6.IsValid() {
 			dns = append(dns, serverAddress(tunnel6).String())
 		}
+		// and the stand-in addresses of their internet addresses, through the tunnel
+		if !peer.RouteAll && s.standInsOn(server) {
+			networks = append(networks, s.opts.StandIns.Masked().String())
+		}
 	}
 	config := peerconf.Config{
 		PeerName:        peer.Name,
@@ -286,6 +290,8 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 		Endpoint:        peerconf.Endpoint(server.PublicHost, server.EndpointPort()),
 		Fallbacks:       server.FallbackEndpoints,
 		Keepalive:       server.Keepalive,
+		// the Authway app routes the internet addresses of its names itself: the other apps take the stand-in ones
+		NameRoutes: hasNames(peer.Access) && !peer.RouteAll,
 	}
 	if server.Gated() {
 		config.Login = peerconf.LoginURL(serverAddress(tunnel), s.opts.LoginPort)

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { isName } from '../../addresses'
 import { api, type Peer, type Route, type Server, type User } from '../../api'
 import AppIcon from '../../components/AppIcon.vue'
 import UiBadge from '../../components/UiBadge.vue'
@@ -111,7 +112,9 @@ function peerNotes(peer: Peer): string[] {
   if (peer.access.length === 1) {
     notes.push(`only ${peer.access[0]}`)
   } else if (peer.access.length > 1) {
-    notes.push(`only ${peer.access.length} networks`)
+    const named = peer.access.filter(isName).length
+    const kind = named === 0 ? 'networks' : named === peer.access.length ? 'names' : 'networks and names'
+    notes.push(`only ${peer.access.length} ${kind}`)
   }
   return notes
 }

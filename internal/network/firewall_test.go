@@ -487,3 +487,103 @@ func TestNames(t *testing.T) {
 		t.Errorf("command: %s", got)
 	}
 }
+
+// chainOf is the text of a chain of a ruleset, "" when it has none
+func chainOf(rules, name string) string {
+	start := strings.Index(rules, "\tchain "+name+" {\n")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(rules[start:], "\n\t}\n")
+	if end < 0 {
+		return ""
+	}
+	return rules[start : start+end]
+}
+
+// inOrder fails unless each line is in text, after the one before
+func inOrder(t *testing.T, text string, lines ...string) {
+	t.Helper()
+	at := -1
+	for _, line := range lines {
+		index := strings.Index(text, line)
+		if index < 0 || index < at {
+			t.Fatalf("%q missing or out of order in:\n%s", line, text)
+		}
+		at = index
+	}
+}
+
+// The internet addresses of the names: the stand-in addresses a peer learned lead to them, marked like the other
+// learned addresses; the ones it didn't learn lead nowhere. A server whose peers have no names has none of it.
+func TestStandIns(t *testing.T) {
+	addr, prefix := netip.MustParseAddr, netip.MustParsePrefix
+	state := State{
+		LoginPort: 8181, RedirectPort: 8180, DNSPort: 8153, ResolverPort: 8154,
+		StandInNetwork: prefix("198.18.0.0/16"),
+		StandIns: []StandIn{
+			{Address: addr("198.18.0.5"), Real: addr("203.0.113.10")},
+			{Address: addr("198.18.9.1"), Real: addr("198.51.100.7")},
+			// twice, and outside the network: once, and not at all
+			{Address: addr("198.18.0.5"), Real: addr("203.0.113.99")},
+			{Address: addr("10.0.0.1"), Real: addr("203.0.113.11")},
+		},
+		Servers: []Server{{
+			Interface: "wg0", Gated: true, Address: prefix("10.8.0.1/24"), StandIns: true,
+			Networks: []netip.Prefix{prefix("192.168.1.0/24")},
+			Peers: []Peer{{Address: addr("10.8.0.2"), Access: []netip.Prefix{}, Names: true,
+				Learned: []netip.Addr{addr("192.168.1.10"), addr("198.18.0.5")}}},
+		}, {
+			Interface: "wg1", Address: prefix("10.9.0.1/24"), StandIns: true, Routed: true,
+			Networks: []netip.Prefix{prefix("192.168.2.0/24")},
+			Peers:    []Peer{{Address: addr("10.9.0.2"), Access: []netip.Prefix{}, Names: true}},
+		}, {
+			Interface: "wg2", Address: prefix("10.10.0.1/24"), StandIns: true,
+			Networks: []netip.Prefix{prefix("192.168.3.0/24")},
+			Peers:    []Peer{{Address: addr("10.10.0.2")}},
+		}},
+	}
+	rules := Ruleset(state)
+	inOrder(t, rules,
+		"set wg0_learned {\n\t\ttype ipv4_addr . ipv4_addr\n\t\telements = { 10.8.0.2 . 192.168.1.10, 10.8.0.2 . 198.18.0.5 }\n\t}",
+		"map stand_ins {\n\t\ttype ipv4_addr : ipv4_addr\n\t\telements = { 198.18.0.5 : 203.0.113.10, 198.18.9.1 : 198.51.100.7 }\n\t}",
+		"chain prerouting {",
+		`iifname "wg0" ip saddr { 10.8.0.2 } ip saddr @wg0_sessions udp dport 53 redirect to :8154`,
+		// logged in on a server with a login, always without one
+		`iifname "wg0" ip saddr @wg0_sessions ip daddr 198.18.0.0/16 ip saddr . ip daddr @wg0_learned ct mark set 0x00415701 dnat ip to ip daddr map @stand_ins`,
+		`iifname "wg1" ip daddr 198.18.0.0/16 ip saddr . ip daddr @wg1_learned ct mark set 0x00415701 dnat ip to ip daddr map @stand_ins`,
+		"chain forward {",
+		// out with the address of the container, routed or not: the internet doesn't route the tunnels back
+		"chain postrouting {",
+		`ip saddr 10.8.0.0/24 oifname != "wg*" masquerade`,
+		`ip saddr 10.9.0.0/24 oifname != "wg*" ip daddr != { 192.168.2.0/24 } masquerade`,
+	)
+	// the untranslated ones, before the rules of the peer: its learned addresses, and the marked connections
+	inOrder(t, chainOf(rules, "wg0_forward"),
+		`oifname "wg*" drop`,
+		"ip daddr 198.18.0.0/16 drop",
+		"ip saddr . ip daddr @wg0_learned ct mark set 0x00415701 accept",
+		"ip saddr { 10.8.0.2 } ct mark 0x00415701 accept",
+	)
+	if chain := chainOf(rules, "wg2_forward"); chain == "" || strings.Contains(chain, "198.18") ||
+		strings.Contains(rules, `iifname "wg2" ip daddr 198.18`) {
+		t.Errorf("stand-ins on wg2, without names:\n%s", rules)
+	}
+	// none without the network, nor without a server that uses them
+	state.StandInNetwork = netip.Prefix{}
+	if rules := Ruleset(state); strings.Contains(rules, "198.18.0.0/16") || strings.Contains(rules, StandInMap) {
+		t.Errorf("stand-ins without their network:\n%s", rules)
+	}
+	state.StandInNetwork = prefix("198.18.0.0/16")
+	state.Servers = state.Servers[2:]
+	if rules := Ruleset(state); strings.Contains(rules, StandInMap) || strings.Contains(rules, "chain prerouting") {
+		t.Errorf("stand-ins without names:\n%s", rules)
+	}
+	if got := StandInCommand(true, StandIn{Address: addr("198.18.0.5"), Real: addr("203.0.113.10")}); got !=
+		"add element inet authway stand_ins { 198.18.0.5 : 203.0.113.10 }" {
+		t.Errorf("add: %s", got)
+	}
+	if got := StandInCommand(false, StandIn{Address: addr("198.18.0.5")}); got != "delete element inet authway stand_ins { 198.18.0.5 }" {
+		t.Errorf("delete: %s", got)
+	}
+}

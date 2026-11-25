@@ -254,6 +254,10 @@ func (s *Service) UpdateServer(by Actor, id int64, input ServerInput) (*ServerVi
 	if !slices.Equal(before.Networks, server.Networks) || before.Network6 != server.Network6 || !server.Enabled {
 		s.forgetServerLearnedLocked(&before)
 	}
+	// and the names it looked up for them, in its networks of before, of its DNS servers of before
+	if !slices.Equal(before.Networks, server.Networks) || before.Network6 != server.Network6 || !slices.Equal(before.DNS, server.DNS) {
+		s.forgetLookupsLocked(server.ID)
+	}
 	bound := server.DeviceBinding && !before.DeviceBinding
 	if !server.Enabled || server.AuthMode != before.AuthMode || bound {
 		// the peers log in again under the new rules: with device binding, from their device
@@ -311,7 +315,7 @@ func (s *Service) DeleteServer(by Actor, id int64) error {
 		return notFound(err)
 	}
 	for _, peer := range peers {
-		delete(s.learned, peer.ID)
+		s.dropLearnedLocked(peer.ID)
 	}
 	// the other servers no longer reach it
 	if servers, err := s.db.Q().Servers(); err == nil {
@@ -381,6 +385,14 @@ func (s *Service) checkServer(input ServerInput, server *store.Server, servers [
 		c.fail("network", "size")
 	}
 	tunnel = tunnel.Masked()
+	// the stand-in addresses of the internet names: the peers route them through the tunnel
+	standIns := s.opts.StandIns
+	if !validStandIns(standIns) {
+		standIns = netip.Prefix{}
+	}
+	if standIns.IsValid() && tunnel.IsValid() && tunnel.Overlaps(standIns) {
+		c.fail("network", "overlaps_stand_ins")
+	}
 	text6 := strings.TrimSpace(input.Network6)
 	var tunnel6 netip.Prefix
 	if text6 != "" {
@@ -419,6 +431,10 @@ func (s *Service) checkServer(input ServerInput, server *store.Server, servers [
 		}
 		if (tunnel.IsValid() && prefix.Overlaps(tunnel)) || (tunnel6.IsValid() && prefix.Overlaps(tunnel6)) {
 			c.fail("networks", "overlaps_tunnel")
+			continue
+		}
+		if standIns.IsValid() && prefix.Overlaps(standIns) {
+			c.fail("networks", "overlaps_stand_ins")
 			continue
 		}
 		// nftables refuses networks that overlap in the same rule

@@ -52,13 +52,20 @@ server can add more:
 ## Networks
 
 - **What the peers reach**: the networks you list for each server, your LAN for example, or everything for a peer
-  that sends all its traffic through the tunnel.
+  that sends all its traffic through the tunnel. A server can also have no networks, for sites by name only.
 - **Access rules for each peer**: a peer can reach only some of the networks of its server, down to single
   addresses: the file server for one user, the printer for another. The firewall of the server enforces them, with
   NAT and routed alike, whatever the configuration file says. With all its traffic through the tunnel, such a peer
   reaches the internet too, but no other private network. On a server with login each user has one peer, so these
-  are the access rules of the user. A rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under
-  it: the server learns their addresses from the DNS answers of the peer.
+  are the user's access rules.
+- **Rules by name**: a rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under it. The device
+  then uses Authway Server as its DNS server, and each answer opens the addresses it gives. Authway Server also looks
+  up exact names itself, so a device that kept an old answer, or that uses DNS over HTTPS, still reaches the ones
+  inside your networks. What the peers learned survives a restart.
+- **Sites on the internet by name**: a rule such as `app.example.com` sends that site through the VPN, so it sees the
+  server's address, while the rest of the peer's internet stays direct. The Authway app routes the site's real
+  addresses, IPv6 included. The other WireGuard apps get a stand-in address from 198.18.0.0/16 instead, which the
+  server passes on to the real one, over IPv4.
 - **NAT or routed**, for each server: its networks see the address of the host, with nothing to set up, or the address
   of each peer, for their logs and firewall rules. Routed, they can also start connections to the peers logged in.
   See [Routed servers](routed-servers.md).

@@ -9,9 +9,11 @@ import (
 // configuration can share a session with the strict lock.
 const TickInterval = 5 * time.Second
 
-// Run checks the sessions, and syncs the users of Active Directory, until ctx ends.
+// Run checks the sessions, syncs the users of Active Directory, and looks up the names of the access rules, until ctx
+// ends.
 func (s *Service) Run(ctx context.Context) {
 	go s.runDirectory(ctx)
+	go s.runLookups(ctx)
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	for {
@@ -59,6 +61,9 @@ func (s *Service) Tick() {
 	}
 	s.challenges.prune(now)
 	s.pruneLearnedLocked(now)
+	if s.namesChanged && now.Sub(s.namesSavedAt) >= NamesSaveInterval {
+		s.saveNamesLocked()
+	}
 	for peer, at := range s.mismatches {
 		if now.Sub(at) > CopyReportInterval {
 			delete(s.mismatches, peer)

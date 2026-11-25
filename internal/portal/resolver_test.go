@@ -13,11 +13,13 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/phatdo1819/authway-server/internal/core"
+	"github.com/phatdo1819/authway-server/internal/names"
 	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/store"
 )
 
-// upstream is a DNS server for the tests, over UDP and TCP on one port of 127.0.0.1: files.corp.lan is 192.168.1.20
+// upstream is a DNS server for the tests, over UDP and TCP on one port of 127.0.0.1: files.corp.lan is 192.168.1.20,
+// app.example.com is 203.0.113.10 on the internet
 func upstream(t *testing.T) int {
 	t.Helper()
 	var packets net.PacketConn
@@ -47,10 +49,11 @@ func upstream(t *testing.T) int {
 			return nil
 		}
 		reply := dnsmessage.Message{Header: dnsmessage.Header{ID: header.ID, Response: true}, Questions: []dnsmessage.Question{question}}
-		if question.Name.String() == "files.corp.lan." {
+		addresses := map[string][4]byte{"files.corp.lan.": {192, 168, 1, 20}, "app.example.com.": {203, 0, 113, 10}}
+		if address, ok := addresses[question.Name.String()]; ok {
 			reply.Answers = []dnsmessage.Resource{{
 				Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 300},
-				Body:   &dnsmessage.AResource{A: [4]byte{192, 168, 1, 20}},
+				Body:   &dnsmessage.AResource{A: address},
 			}}
 		}
 		data, _ := reply.Pack()
@@ -74,8 +77,8 @@ func upstream(t *testing.T) int {
 			}
 			go func() {
 				defer conn.Close()
-				if query, err := readMessage(conn); err == nil {
-					writeMessage(conn, answer(query))
+				if query, err := names.ReadMessage(conn); err == nil {
+					names.WriteMessage(conn, answer(query))
 				}
 			}()
 		}
@@ -94,7 +97,7 @@ func query(t *testing.T, name string) []byte {
 }
 
 // The DNS server of the peers with names: their queries go to the DNS servers of their server, over UDP and TCP, and
-// the addresses of their names open before the answer comes back.
+// the addresses of their names open before the answer comes back, the stand-in addresses of the internet ones in it.
 func TestResolver(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -104,7 +107,7 @@ func TestResolver(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fake := network.NewFake()
 	service, err := core.New(db, fake, core.Options{LoginPort: 8181, PublicHost: "vpn.example.com", Log: log,
-		UpstreamPort: upstream(t)})
+		UpstreamPort: upstream(t), StandIns: netip.MustParsePrefix(core.DefaultStandIns)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +119,7 @@ func TestResolver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := []string{"*.corp.lan"}
+	access := []string{"*.corp.lan", "app.example.com"}
 	peer, err := service.CreatePeer(core.Actor{Username: "tester"}, server.ID, core.PeerInput{Name: "kiosk", Enabled: true, Access: &access})
 	if err != nil {
 		t.Fatal(err)
@@ -173,10 +176,10 @@ func TestResolver(t *testing.T) {
 	defer stream.Close()
 	stream.SetDeadline(time.Now().Add(5 * time.Second))
 	for _, name := range []string{"files.corp.lan.", "www.example.com."} {
-		if err := writeMessage(stream, query(t, name)); err != nil {
+		if err := names.WriteMessage(stream, query(t, name)); err != nil {
 			t.Fatal(err)
 		}
-		reply, err := readMessage(stream)
+		reply, err := names.ReadMessage(stream)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,6 +187,49 @@ func TestResolver(t *testing.T) {
 	}
 	if len(fake.Learned["wg0"]) != 1 {
 		t.Errorf("TCP: %+v", fake.Learned)
+	}
+	// a name on the internet: its stand-in address in the answer, leading to it
+	if err := names.WriteMessage(stream, query(t, "app.example.com.")); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := names.ReadMessage(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := read(reply)
+	if len(answers) != 1 {
+		t.Fatalf("internet name: %+v", answers)
+	}
+	standIn := netip.AddrFrom4(answers[0].Body.(*dnsmessage.AResource).A)
+	if !netip.MustParsePrefix(core.DefaultStandIns).Contains(standIn) ||
+		fake.ReachesThrough("wg0", address, standIn) != netip.MustParseAddr("203.0.113.10") {
+		t.Errorf("internet name: %v, stand-ins %v", standIn, fake.StandIns)
+	}
+	// asked by the Authway app: the real address, and the route for the app
+	var edns dnsmessage.ResourceHeader
+	if err := edns.SetEDNS0(1232, dnsmessage.RCodeSuccess, false); err != nil {
+		t.Fatal(err)
+	}
+	appQuery, err := (&dnsmessage.Message{Header: dnsmessage.Header{ID: 4242, RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName("app.example.com."), Type: dnsmessage.TypeA,
+			Class: dnsmessage.ClassINET}},
+		Additionals: []dnsmessage.Resource{{Header: edns, Body: &dnsmessage.OPTResource{
+			Options: []dnsmessage.Option{{Code: names.RoutesOption}}}}}}).Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := names.WriteMessage(stream, appQuery); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err = names.ReadMessage(stream); err != nil {
+		t.Fatal(err)
+	}
+	answers = read(reply)
+	routes := names.Routes(reply)
+	if len(answers) != 1 || netip.AddrFrom4(answers[0].Body.(*dnsmessage.AResource).A) != netip.MustParseAddr("203.0.113.10") ||
+		len(routes) != 1 || routes[0].Addr != netip.MustParseAddr("203.0.113.10") ||
+		!fake.Reaches("wg0", address, netip.MustParseAddr("203.0.113.10")) {
+		t.Errorf("asked by the app: %+v, routes %+v", answers, routes)
 	}
 	// a reply sent to it isn't a query
 	if reply := pages.resolve(ctx, address, sentReply(t), false); reply != nil {

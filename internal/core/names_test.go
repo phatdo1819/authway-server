@@ -112,7 +112,7 @@ func TestNamesInAccessRules(t *testing.T) {
 	if _, ok := f.s.Resolver(address); ok {
 		t.Error("resolver before the login")
 	}
-	f.s.Learn(address, files)
+	f.s.learn(address, files)
 	if reaches(address, "192.168.1.20") {
 		t.Error("learned before the login")
 	}
@@ -129,15 +129,15 @@ func TestNamesInAccessRules(t *testing.T) {
 	}
 
 	// its names: the addresses inside the networks, of both versions, at once; not the others
-	f.s.Learn(address, files)
+	f.s.learn(address, files)
 	if !reaches(address, "192.168.1.20") || !reaches(address6, "fd00:5::20") || reaches(address, "10.99.0.1") ||
 		reaches(address6, "fd00:9::1") {
 		t.Fatalf("learned: %+v", f.net.Learned)
 	}
 	// a wildcard, through an alias; another name, nothing
-	f.s.Learn(address, answer(t, "x.apps.lan.", "CNAME x.apps.lan. lb.other.lan.", "A 192.168.1.30 3600 lb.other.lan."))
-	f.s.Learn(address, answer(t, "db.corp.lan.", "A 192.168.1.40 3600"))
-	f.s.Learn(address, answer(t, "apps.lan.", "A 192.168.1.41 3600"))
+	f.s.learn(address, answer(t, "x.apps.lan.", "CNAME x.apps.lan. lb.other.lan.", "A 192.168.1.30 3600 lb.other.lan."))
+	f.s.learn(address, answer(t, "db.corp.lan.", "A 192.168.1.40 3600"))
+	f.s.learn(address, answer(t, "apps.lan.", "A 192.168.1.41 3600"))
 	if !reaches(address, "192.168.1.30") || reaches(address, "192.168.1.40") || reaches(address, "192.168.1.41") {
 		t.Errorf("names: %+v", f.net.Learned)
 	}
@@ -163,7 +163,7 @@ func TestNamesInAccessRules(t *testing.T) {
 		t.Fatalf("expired: %+v", f.net.Learned)
 	}
 	// a new answer opens it again
-	f.s.Learn(address, files)
+	f.s.learn(address, files)
 	if !reaches(address, "192.168.1.20") {
 		t.Error("not learned again")
 	}
@@ -173,7 +173,7 @@ func TestNamesInAccessRules(t *testing.T) {
 	for index := range MaxLearned + 10 {
 		records = append(records, fmt.Sprintf("A 10.20.%d.%d 3600", index/250, index%250+1))
 	}
-	f.s.Learn(address, answer(t, "big.apps.lan.", records...))
+	f.s.learn(address, answer(t, "big.apps.lan.", records...))
 	if count := len(f.s.learned[peer.ID].until); count != MaxLearned {
 		t.Errorf("%d learned", count)
 	}
@@ -199,7 +199,7 @@ func TestNamesInAccessRules(t *testing.T) {
 	if _, err := f.s.UpdatePeer(testActor, peer.ID, peerInput); err != nil {
 		t.Fatal(err)
 	}
-	f.s.Learn(address, files)
+	f.s.learn(address, files)
 	if !reaches(address, "192.168.1.20") {
 		t.Fatal("not learned with names again")
 	}
@@ -214,7 +214,7 @@ func TestNamesInAccessRules(t *testing.T) {
 	}
 
 	// the backups keep the names; a restore forgets every learned address and closes every connection to them
-	f.s.Learn(address, files)
+	f.s.learn(address, files)
 	data := f.sealed(adminID, func(c *backupContent) {
 		if c.Version != BackupVersion || !slices.Equal(c.Peers[0].Access, []string{"files.corp.lan"}) {
 			t.Fatalf("content: %+v", c.Peers[0])
@@ -254,7 +254,7 @@ func TestNamesWithoutLogin(t *testing.T) {
 	if _, ok := f.s.Resolver(address); !ok {
 		t.Fatal("no resolver without a login")
 	}
-	f.s.Learn(address, answer(t, "files.corp.lan.", "A 192.168.1.20 60"))
+	f.s.learn(address, answer(t, "files.corp.lan.", "A 192.168.1.20 60"))
 	if !f.net.Reaches("wg0", address, netip.MustParseAddr("192.168.1.20")) {
 		t.Error("not learned without a login")
 	}

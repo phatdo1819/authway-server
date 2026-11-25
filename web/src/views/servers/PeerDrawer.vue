@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import { address6Of, addressProblem, nextFreeAddress } from '../../addresses'
+import { address6Of, addressProblem, isName, nextFreeAddress } from '../../addresses'
 import { api, ApiError, type Peer, type PeerInput, type Server, type User } from '../../api'
 import ConflictNotice from '../../components/ConflictNotice.vue'
 import UiButton from '../../components/UiButton.vue'
@@ -22,35 +22,69 @@ const form = ref<PeerInput>({ name: '', enabled: true, user_id: 0, route_all: fa
 const errors = ref<Record<string, string>>({})
 const error = ref('')
 const busy = ref(false)
-// the access rules: all the networks of the server, or only some, inside them
+// the access rules: all the networks of the server, or only some, inside them, and names. A server without networks
+// takes only names, none when the list is empty
 const limited = ref(false)
 const access = ref<string[]>([])
+const hasNetworks = computed(() => props.server.networks.length > 0)
+// the list applies: only some of the networks, or the names of a server without networks
+const listed = computed(() => limited.value || !hasNetworks.value)
 const serverNetworks = computed(() => props.server.networks.join(', '))
 const accessModes = [
   { value: false, label: "All of the server's networks" },
   { value: true, label: 'Only some of them' },
 ]
-// a name, files.corp.lan or *.corp.lan: neither an IPv4 address or network (digits, dots and a slash) nor an IPv6 one
-function isName(entry: string): boolean {
-  const text = entry.trim()
-  return text !== '' && !text.includes(':') && !/^[\d./]+$/.test(text)
-}
-const typedNames = computed(() => limited.value && access.value.some(isName))
+const typedNames = computed(() => listed.value && access.value.some(isName))
+const routeAllHelp = computed(
+  () =>
+    `The device's internet traffic also goes out through this server. If off, only traffic for ${hasNetworks.value ? "the server's networks" : 'the sites below'} uses the VPN.`,
+)
 const accessHelp = computed(() => {
-  let help = `Addresses, networks or names inside ${serverNetworks.value}. A single address means just that one device. A name such as files.corp.lan, or *.corp.lan for every name under corp.lan, covers the addresses that DNS gives for it.`
+  if (!hasNetworks.value) {
+    if (form.value.route_all) {
+      return 'Since all its traffic goes through the VPN, it already reaches every site on the internet.'
+    }
+    return "Sites on the internet, such as app.example.com, or *.example.com for every name under example.com (not example.com itself). Their traffic goes through the VPN, so they see the server's public address, and the peer uses Authway Server as its DNS server. Leave it empty for none."
+  }
+  let help = `Addresses or networks inside ${serverNetworks.value}, or names. A single address means just that one device. A name such as files.corp.lan, or *.corp.lan for every name under corp.lan (not corp.lan itself), covers the addresses that DNS gives for it.`
+  if (!form.value.route_all) {
+    help += " A name on the internet, such as app.example.com, also goes through the VPN, so the site sees the server's public address."
+  }
   help += typedNames.value ? ' With a name, the peer uses Authway Server as its DNS server.' : " The peer still uses the server's DNS servers."
   return form.value.route_all ? `${help} Since all its traffic goes through the VPN, it can also reach the internet, but no other private networks.` : help
 })
-const accessError = computed(() =>
-  errors.value.access === 'invalid'
+const accessError = computed(() => {
+  if (errors.value.access !== 'invalid') {
+    return fieldMessage(errors.value.access)
+  }
+  return hasNetworks.value
     ? 'Enter addresses, networks, or names such as files.corp.lan or *.corp.lan.'
-    : fieldMessage(errors.value.access),
-)
-const accessChanges = computed(() => {
-  const before = props.peer?.access ?? []
-  const after = limited.value ? access.value.map((entry) => entry.trim()).filter(Boolean) : []
-  return before.join(',') !== after.join(',')
+    : 'Enter names such as app.example.com or *.example.com.'
 })
+// the rules typed, without the blank lines
+const typedAccess = computed(() => (listed.value ? access.value.map((entry) => entry.trim()).filter(Boolean) : []))
+// *.corp.lan covers the names under corp.lan, not corp.lan itself (in Active Directory, the domain's own name gives
+// every domain controller): the wildcards typed without their own name, as the server compares names
+const wildcardsAlone = computed(() => {
+  const typed = typedAccess.value.map((entry) => entry.replace(/\.$/, '').toLowerCase())
+  const parents = typed.filter((entry) => entry.startsWith('*.') && isName(entry)).map((entry) => entry.slice(2))
+  // a name alone needs two labels: *.lan's own name couldn't be added anyway
+  return [...new Set(parents)].filter((parent) => parent.includes('.') && !typed.includes(parent))
+})
+function listOf(items: string[]): string {
+  return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : items[0]
+}
+const wildcardHint = computed(() => {
+  const parents = wildcardsAlone.value
+  if (parents.length === 0) {
+    return ''
+  }
+  if (parents.length === 1) {
+    return `*.${parents[0]} doesn't include ${parents[0]} itself. Add ${parents[0]} too if the peer needs it.`
+  }
+  return `${listOf(parents.map((parent) => `*.${parent}`))} don't include ${listOf(parents)} themselves. Add them too if the peer needs them.`
+})
+const accessChanges = computed(() => (props.peer?.access ?? []).join(',') !== typedAccess.value.join(','))
 // names change the DNS server of the file, whatever traffic goes through the VPN
 const namesChange = computed(() => (props.peer?.access ?? []).some(isName) !== typedNames.value)
 
@@ -68,7 +102,7 @@ function typed() {
     enabled: form.value.enabled,
     user_id: gated.value ? Number(form.value.user_id) : (props.peer?.user_id ?? 0),
     route_all: form.value.route_all,
-    access: limited.value ? access.value.map((entry) => entry.trim()).filter(Boolean) : [],
+    access: typedAccess.value,
   }
 }
 function fill(values: Partial<ReturnType<typeof typed>>) {
@@ -98,11 +132,14 @@ const addressError = computed(() => (props.peer ? '' : addressProblem(form.value
 const networkFull = computed(
   () => !props.peer && !(form.value.address ?? '').trim() && !nextFreeAddress(props.server.network, props.peers.map((peer) => peer.address)),
 )
-// the routes of the file: all the traffic, or the networks it reaches
+// the routes of the file: all the traffic, or the networks it reaches. With names, it routes all the networks of the
+// server whatever its rules, and asks Authway Server for DNS: only whether it has names changes it
 const changesFile = computed(
   () =>
     props.peer !== null &&
-    (props.peer.route_all !== form.value.route_all || (!form.value.route_all && accessChanges.value) || namesChange.value),
+    (props.peer.route_all !== form.value.route_all ||
+      namesChange.value ||
+      (!form.value.route_all && !typedNames.value && accessChanges.value)),
 )
 // on a server with an IPv6 network, the IPv6 address that comes with the IPv4 one typed
 const addressHelp = computed(() => {
@@ -170,8 +207,9 @@ async function save() {
     const input = {
       ...form.value,
       user_id: gated.value ? Number(form.value.user_id) : (props.peer?.user_id ?? 0),
-      // only some, with nothing typed: the server says it's required, never all by mistake
-      access: limited.value ? (access.value.length ? access.value : ['']) : [],
+      // only some, with nothing typed: the server says it's required, never all by mistake. Without networks, an
+      // empty list is no names
+      access: hasNetworks.value ? (limited.value ? (access.value.length ? access.value : ['']) : []) : typedAccess.value,
       version: guard.version.value,
     }
     const peer = props.peer ? await api.updatePeer(props.peer.id, input) : await api.createPeer(props.server.id, input)
@@ -214,11 +252,7 @@ async function save() {
         There are no users yet. Add one in <RouterLink to="/users" class="font-medium underline">Users</RouterLink> first.
       </UiNotice>
       <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" helper="Usually the device, for example: Alice's laptop." />
-      <UiToggle
-        v-model="form.route_all"
-        label="Send all traffic through the VPN"
-        description="The device's internet traffic also goes out through this server. If off, only traffic for the server's networks uses the VPN."
-      />
+      <UiToggle v-model="form.route_all" label="Send all traffic through the VPN" :description="routeAllHelp" />
       <fieldset v-if="server.networks.length" class="space-y-2.5">
         <legend class="mb-2 text-sm font-medium">Networks it reaches</legend>
         <label
@@ -248,6 +282,16 @@ async function save() {
           :helper="accessHelp"
         />
       </fieldset>
+      <UiListInput
+        v-else
+        v-model="access"
+        label="Sites it reaches by name"
+        placeholder="app.example.com"
+        add-label="Add name"
+        :error="accessError"
+        :helper="accessHelp"
+      />
+      <UiNotice v-if="wildcardHint" tone="info">{{ wildcardHint }}</UiNotice>
       <UiNotice v-if="changesFile" tone="info">
         This changes the configuration file. Download it again for the device.
       </UiNotice>

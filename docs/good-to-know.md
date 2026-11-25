@@ -85,17 +85,32 @@
 ## Peers and devices
 
 - **Access rules**: in the menu of a peer, **Edit > Networks it reaches > Only some of them**, addresses or networks
-  inside the ones of the server. They apply at once, to the connections already open too. The peer still asks the
-  DNS servers of the server, wherever they are, on port 53 only; its configuration file routes its networks and those
-  DNS servers, so download it again after a change, unless it sends all its traffic. The server can't drop a network
-  that a peer still reaches part of: change the peer first. The traffic between peers doesn't depend on them.
+  inside the ones of the server, or names (below). They apply at once, to the connections already open too. The peer
+  still asks the DNS servers of the server, wherever they are, on port 53 only; its configuration file routes its
+  networks and those DNS servers, so download it again when the form says the file changes. The server can't drop a
+  network that a peer still reaches part of: change the peer first. The traffic between peers doesn't depend on them.
 - **Names in the access rules**: a rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under
-  `corp.lan`. The peer then uses Authway Server as its DNS server (download its configuration file again), which asks
-  the DNS servers of the server; each answer for one of its names lets it reach the addresses given, inside the
-  networks of the server, for as long as the answer holds and 10 minutes more. Connections opened meanwhile stay
-  open; new ones need a new answer, which the device asks for by itself. A device that uses DNS over HTTPS, as some
-  browsers do, asks another way: those names stay blocked. A wildcard covers every name under it, including the ones
-  users can create, as in Active Directory's DNS by default: use exact names for the hosts that matter.
+  `corp.lan`. The device then uses Authway Server as its DNS server, which asks the server's DNS servers. Each answer
+  for one of the peer's names lets it reach the addresses given, for as long as the answer holds and 10 minutes more.
+  Connections opened meanwhile stay open; new ones need a new answer, which the device asks for by itself. What the
+  peers learned survives a restart of Authway Server. A private address outside the server's networks doesn't go
+  through the VPN: add its network to the server.
+- **Exact names are looked up by Authway Server too**: for `files.corp.lan`, but not `*.corp.lan`, Authway Server asks
+  the DNS servers itself while the peer is logged in (always, on a server without a login), and keeps the addresses
+  inside your networks open. A device that kept an older answer, or that uses DNS over HTTPS as some browsers do,
+  still reaches them. Such a device can't reach the names of a wildcard inside your networks, and its internet names
+  go out directly.
+- **Sites on the internet by name**, such as `app.example.com`, go through the VPN too, so the site sees the server's
+  public address. The Authway app routes their real addresses itself, IPv6 too when the VPN has IPv6. The other
+  WireGuard apps get a stand-in address from 198.18.0.0/16 instead, which their configuration file sends through the
+  VPN, and the server passes the connections on to the real address. That works over IPv4 only, and `ping` shows the
+  stand-in address. If your devices already use 198.18.0.0/16, set `AUTHWAY_STAND_IN_NETWORK` to another network, or
+  to `off`, in the `environment` of `compose.override.yaml`. A server without networks takes names alone: its peers
+  send just those sites through the VPN.
+- **Wildcards** cover every name under them, including the ones users can create, as in Active Directory's DNS by
+  default. Use exact names for the hosts that matter. A wildcard doesn't cover its own name: `*.corp.lan` leaves out
+  `corp.lan`, which in Active Directory gives the addresses of every domain controller. Add `corp.lan` too if the
+  peer needs it; the peer form reminds you.
 - **Import**: **Users > Import** reads a CSV file, from a spreadsheet saved as *CSV UTF-8*, with a header that names
   its columns in any order: `username`, `full_name` and `password`, the last two optional. Each row adds a user, as
   **Add user** does. An import never changes a user: a username already there stops the import, or, with **Skip the
@@ -107,9 +122,10 @@
   tunnel after it, at most 32 characters, so long names are cut. A file imported again under another name is a
   second tunnel in the app: remove the old one.
 
-- **Device binding needs Authway**, on Windows or macOS, and 0.2.0 or later for the WireGuard key of the device: the
-  browser and the WireGuard apps can't sign the login. The first computer that logs in for a peer is enrolled, during 72 hours by default (**Settings > Logins >
-  Device binding**). After a reinstall or for a new computer, choose **Replace the device** in the menu of the
+- **Device binding needs Authway**, on Windows, macOS or Linux, and 0.2.0 or later for the WireGuard key of the
+  device: the browser and the WireGuard apps can't sign the login. The first computer that logs in for a peer is
+  enrolled, during 72 hours by default (**Settings > Logins > Device binding**). After a reinstall or for a new
+  computer, choose **Replace the device** in the menu of the
   peer: the next computer that logs in is enrolled. **Revoke the device** leaves the peer without one until you
   allow a new one. Turning binding on logs out the peers of the server: they log in again from their computer.
 - **The WireGuard key of the device**: once Authway gave it, a configuration file downloaded again doesn't connect,

@@ -498,8 +498,12 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 	s.challenges = challenges{}
 	s.mismatches = map[int64]time.Time{}
 	s.counters = map[int64]peerCounters{}
-	// the addresses learned for names, and the connections opened to them: of other peers, maybe
+	// the addresses learned for names, and the connections opened to them: of other peers, maybe. Written at once, so
+	// that a restart doesn't bring them back
 	s.learned = map[int64]*learnedPeer{}
+	s.forgetStandInsLocked()
+	s.forgetLookupsLocked(0)
+	s.saveNamesLocked()
 	if err := s.net.ForgetLearned(); err != nil {
 		s.log.Warn("can't close the connections to the addresses of names", "error", err)
 	}
