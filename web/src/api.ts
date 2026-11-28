@@ -29,9 +29,11 @@ export interface Server {
   block_copies: boolean
   redirect: boolean
   fallback_endpoints: string[]
-  // only with a login: the peers log in from their enrolled device, and with machine_id from its computer
+  // only with a login: the peers log in from their enrolled device, and with machine_id from its computer.
+  // device_approval: what the new peers get, a new device waits for an administrator to approve it
   device_binding: boolean
   machine_id: boolean
+  device_approval: boolean
   // the peers reach each other, and the peers of the servers listed (by id), one way
   client_to_client: boolean
   reachable_servers: number[]
@@ -78,6 +80,7 @@ export type ServerInput = Pick<
   | 'fallback_endpoints'
   | 'device_binding'
   | 'machine_id'
+  | 'device_approval'
   | 'client_to_client'
   | 'reachable_servers'
   | 'routed'
@@ -163,6 +166,8 @@ export interface Peer {
   received: number
   sent: number
   session: Session | null
+  // on a server with device binding, a new device waits for an administrator to approve it
+  device_approval: boolean
   // only on a server with device binding
   device: PeerDevice | null
   created_at: number
@@ -173,10 +178,12 @@ export interface Peer {
   updated_by: string
 }
 
-// the device of a peer: enrolled, waiting for one (until enrollment_until) or closed (an administrator allows one)
+// the device of a peer: enrolled, waiting for one (until enrollment_until), pending (a device logged in and waits for
+// an administrator to approve it, named by key_id) or closed (an administrator allows one)
 export interface PeerDevice {
-  state: 'enrolled' | 'waiting' | 'closed'
+  state: 'enrolled' | 'waiting' | 'pending' | 'closed'
   enrollment_until: number
+  key_id?: string
   name: string
   kind: string
   // a machine ID is recorded
@@ -207,6 +214,47 @@ export interface Connection {
   connected: boolean
 }
 
+// a row of the flow logs: the connections a peer started to one destination and port during one hour
+export interface Flow {
+  id: number
+  // the start of the hour
+  hour: number
+  server_id: number
+  server_name: string
+  peer_id: number
+  peer_name: string
+  username: string
+  // tcp, udp, icmp, icmpv6, or the number of another protocol
+  protocol: string
+  address: string
+  // 0 without ports
+  port: number
+  // the name of the access rules that gave the address
+  name: string
+  connections: number
+  sent: number
+  received: number
+  first_at: number
+  last_at: number
+}
+
+// what the flow logs do
+export interface FlowStatus {
+  mode: FlowMode
+  days: number
+  recording: boolean
+  error: string
+  // the kernel counts the bytes of the connections
+  bytes: boolean
+  lost: number
+  dropped: number
+  rows: number
+  max_rows: number
+  oldest: number
+}
+
+export type FlowMode = 'off' | 'internal' | 'all'
+
 export interface PeerInput {
   name: string
   enabled: boolean
@@ -215,6 +263,8 @@ export interface PeerInput {
   address?: string
   // [] for all the networks of the server
   access?: string[]
+  // missing: as it is, the choice of the server for a new peer
+  device_approval?: boolean
   // when edited: the version the form opened with
   version?: number
 }
@@ -280,7 +330,7 @@ export interface HistoryFilter {
   offset?: number
 }
 
-export type HistoryList = 'history' | 'connections' | 'events'
+export type HistoryList = 'history' | 'connections' | 'events' | 'flows'
 
 function query(filter: HistoryFilter): string {
   const params = new URLSearchParams()
@@ -454,6 +504,9 @@ export interface Settings {
   history_days: number
   // the days an administrator can log in from a remembered browser without a code, 0 when off
   admin_remember_days: number
+  // the flow logs, and the days they're kept
+  flow_logs: FlowMode
+  flow_days: number
 }
 
 // admin: everything; operator: the users, the peers and the sessions; viewer: sees, changes nothing
@@ -747,6 +800,8 @@ export const api = {
   // hours 0: the ones of the settings
   allowDevice: (id: number, hours = 0) => json<Peer>('POST', `/peers/${id}/device`, { hours }),
   revokeDevice: (id: number) => json<Peer>('DELETE', `/peers/${id}/device`),
+  approveDevice: (id: number, keyId: string) => json<Peer>('POST', `/peers/${id}/device/approve`, { key_id: keyId }),
+  rejectDevice: (id: number, keyId: string) => json<Peer>('POST', `/peers/${id}/device/reject`, { key_id: keyId }),
   alerts: (limit = 200) => json<Alert[]>('GET', `/alerts?limit=${limit}`),
   async peerConfig(id: number): Promise<{ name: string; text: string }> {
     const response = await send('GET', `/peers/${id}/config`)
@@ -773,6 +828,8 @@ export const api = {
   history: (filter: HistoryFilter = {}) => json<Page<Session>>('GET', '/history' + query(filter)),
   connections: (filter: HistoryFilter = {}) => json<Page<Connection>>('GET', '/connections' + query(filter)),
   events: (filter: HistoryFilter = {}) => json<Page<EventItem>>('GET', '/events' + query(filter)),
+  flows: (filter: HistoryFilter = {}) => json<Page<Flow>>('GET', '/flows' + query(filter)),
+  flowStatus: () => json<FlowStatus>('GET', '/flows/status'),
   // every row of a list that matches the filter, as a CSV file
   // the file, and how many rows it has of how many match: fewer when it stops at the limit of the server
   async historyCSV(

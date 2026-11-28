@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/phatdo1819/authway-server/internal/names"
 	"github.com/phatdo1819/authway-server/internal/store"
 )
 
@@ -38,20 +40,22 @@ type savedStandIn struct {
 	Until   int64  `json:"until"`
 }
 
-// savedLearned is what a peer learned, each address with until when it stays open, in Unix seconds. The ids, the
-// creations and the versions of the peer and of its server tell that they're the same, unchanged: a new peer can get
-// the id of a deleted one.
+// savedLearned is what a peer learned, each address with until when it stays open, in Unix seconds: the address, or
+// the address and the ports of the rule of its name after a space; and by the same text, the names that taught it,
+// with until when each holds it open (none from an older version). The ids, the creations and the versions of
+// the peer and of its server tell that they're the same, unchanged: a new peer can get the id of a deleted one.
 type savedLearned struct {
-	Peer          int64            `json:"peer"`
-	Created       int64            `json:"created"`
-	Version       int64            `json:"version"`
-	Server        int64            `json:"server"`
-	ServerCreated int64            `json:"server_created"`
-	ServerVersion int64            `json:"server_version"`
-	Interface     string           `json:"interface"`
-	Address       string           `json:"address"`
-	Address6      string           `json:"address6,omitempty"`
-	Learned       map[string]int64 `json:"learned"`
+	Peer          int64                       `json:"peer"`
+	Created       int64                       `json:"created"`
+	Version       int64                       `json:"version"`
+	Server        int64                       `json:"server"`
+	ServerCreated int64                       `json:"server_created"`
+	ServerVersion int64                       `json:"server_version"`
+	Interface     string                      `json:"interface"`
+	Address       string                      `json:"address"`
+	Address6      string                      `json:"address6,omitempty"`
+	Learned       map[string]int64            `json:"learned"`
+	Names         map[string]map[string]int64 `json:"names,omitempty"`
 }
 
 // saveNamesLocked writes the learned and stand-in addresses to the database, when they differ from the last time. A
@@ -133,9 +137,23 @@ func (s *Service) namesToSaveLocked() (savedNames, error) {
 		if entry.peer6.IsValid() {
 			record.Address6 = entry.peer6.String()
 		}
-		for address, until := range entry.until {
-			if now.Before(until) {
-				record.Learned[address.String()] = until.Unix()
+		for learnedAs, until := range entry.until {
+			if !now.Before(until) {
+				continue
+			}
+			text := learnedAs.String()
+			record.Learned[text] = until.Unix()
+			for name, nameUntil := range entry.from[learnedAs] {
+				if !now.Before(nameUntil) {
+					continue
+				}
+				if record.Names == nil {
+					record.Names = map[string]map[string]int64{}
+				}
+				if record.Names[text] == nil {
+					record.Names[text] = map[string]int64{}
+				}
+				record.Names[text][name] = nameUntil.Unix()
 			}
 		}
 		if len(record.Learned) > 0 {
@@ -228,11 +246,18 @@ func (s *Service) loadNamesLocked() {
 		}
 		networks := parsePrefixes(server.Networks)
 		standIns := !peer.RouteAll && s.standInsOn(server)
-		entry := &learnedPeer{iface: server.Interface, peer4: peer4, peer6: peer6, until: map[netip.Addr]time.Time{}}
+		entry := newLearnedPeer(server.Interface, peer4, peer6)
+		// the ports of its rules of names: the peer is unchanged, so they're the same as when it learned
+		rules := names.Rules(peer.Access)
+		ports := map[string]bool{"": true}
+		for _, rule := range rules {
+			ports[rule.Ports] = true
+		}
 		for text, unix := range record.Learned {
-			address, err := netip.ParseAddr(text)
+			addressText, portsText, _ := strings.Cut(text, " ")
+			address, err := netip.ParseAddr(addressText)
 			until := time.Unix(unix, 0)
-			if err != nil || !now.Before(until) || len(entry.until) >= MaxLearned {
+			if err != nil || !ports[portsText] || !now.Before(until) || len(entry.until) >= MaxLearned {
 				continue
 			}
 			if (address.Is6() && !peer6.IsValid()) || address.Is4In6() {
@@ -257,7 +282,19 @@ func (s *Service) loadNamesLocked() {
 			if limit := now.Add(LearnedMax); until.After(limit) {
 				until = limit
 			}
-			entry.until[address] = until
+			key := learnedKey{address, portsText}
+			entry.until[key] = until
+			// the names that taught it, those of its rules with these ports
+			for name, unix := range record.Names[text] {
+				nameUntil := time.Unix(unix, 0)
+				if !now.Before(nameUntil) || !slices.Contains(portsOfName(rules, name), portsText) {
+					continue
+				}
+				if nameUntil.After(until) {
+					nameUntil = until
+				}
+				entry.teach(key, name, nameUntil)
+			}
 		}
 		if len(entry.until) > 0 {
 			s.learned[peer.ID] = entry

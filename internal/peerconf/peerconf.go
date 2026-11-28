@@ -75,6 +75,16 @@ func AllowedIPs(routeAll bool, tunnel, tunnel6 netip.Prefix, networks []string) 
 }
 
 func (c *Config) String() string {
+	return c.write(true)
+}
+
+// Settings is the file without its keys, the private and the preshared ones: what the Authway app takes from Authway
+// Server to update a VPN it has, with the keys it has.
+func (c *Config) Settings() string {
+	return c.write(false)
+}
+
+func (c *Config) write(keys bool) string {
 	var b strings.Builder
 	line := func(format string, args ...any) {
 		fmt.Fprintf(&b, format, args...)
@@ -88,7 +98,9 @@ func (c *Config) String() string {
 	if c.NameRoutes {
 		line("# NameRoutes = 1")
 	}
-	line("PrivateKey = %s", c.PrivateKey)
+	if keys {
+		line("PrivateKey = %s", c.PrivateKey)
+	}
 	if c.Address6.IsValid() {
 		line("Address = %s/32, %s/128", c.Address, c.Address6)
 	} else {
@@ -104,7 +116,9 @@ func (c *Config) String() string {
 	line("[Peer]")
 	line("# Name = %s", oneLine(c.ServerName))
 	line("PublicKey = %s", c.ServerPublicKey)
-	line("PresharedKey = %s", c.PresharedKey)
+	if keys {
+		line("PresharedKey = %s", c.PresharedKey)
+	}
 	line("AllowedIPs = %s", strings.Join(c.AllowedIPs, ", "))
 	line("Endpoint = %s", c.Endpoint)
 	if len(c.Fallbacks) > 0 {

@@ -228,6 +228,12 @@ address of the server as host: a page of another site whose name resolves to it 
 - `POST /api/logout` → `{result}`
 - `POST /api/device-key` `{challenge, wireguard_key, signature}`: see
   [The WireGuard key of the device](#the-wireguard-key-of-the-device)
+- `GET /api/config` → `{config}`, for a peer logged in (else `401 not_authenticated`, `403 blocked | forbidden`): its
+  configuration file as it is now, without the lines `PrivateKey` and `PresharedKey` (`peerconf.Config.Settings`).
+  Not an event, nothing secret. The Authway app asks it after each login, puts its own keys back, and when the
+  settings differ from its file (same server key, same addresses, a login page through the tunnel), saves them and
+  turns the tunnel on again with them, still logged in: new access rules, DNS servers, names or addresses of the
+  server without a new file. ns-wgauth has no such page: the app keeps its file
 
 The POST requests need `Content-Type: application/json`: a form of another site can't send it without a CORS
 preflight, which the API never answers. Each address gets 30 requests a minute, 10 at once, on login, logout and
@@ -299,6 +305,19 @@ leaves the enrollment closed: nobody logs in for the peer until an administrator
 the table `devices`, one row for each peer of a server with binding: the device, or the end of its enrollment window.
 Turning the binding off keeps them, turning it on again uses them at once; the sessions of the server end when it's
 turned on, so every peer logs in from its device.
+
+**Approval.** A peer with `device_approval` (`peers.device_approval`, schema 13; a new peer takes
+`servers.device_approval` of its server unless the input says otherwise) enrolls no device at once: the device that
+logs in during the window, with the right password and code, is saved with `devices.pending` and the login answers
+`403 device_pending`, which isn't a failure. No session, and no other device in its place: it's checked like the
+enrolled one (`device_mismatch` for another key, with its alert), and its next logins answer `device_pending` too,
+until an administrator decides. `POST /api/peers/{id}/device/approve` `{key_id}` enrolls it (`enrolled_at` is then);
+`.../reject` `{key_id}` opens the enrollment again for the hours of the settings, so the next device waits in its
+place. `key_id` is the one the page showed (`device.key_id` of the peer, the SHA-256 of the device key): another
+device that waits meanwhile gets `device: not_waiting`. The status says `pending` (and, with the device key ID,
+`this_device`) and `approval`, the peer's choice, so the app tells its user the computer waits; an older app sees a
+peer it can't log in for. Without `device_approval` anymore, the device that waits is enrolled at its next login.
+Events: `device_waiting` (of the peer), `device_approved` and `device_rejected` (of the web UI).
 
 **Login.** `GET /api/status` of a peer of a bound server returns `device`: `{required, enrolled, enrollment_open,
 machine_id, challenge}`, the challenge 32 random bytes in base64, for that address only, valid 60 seconds and for one
@@ -398,6 +417,25 @@ The configuration file of a peer with rules that doesn't send all its traffic ro
 of the server that are inside the networks of the server but not inside its rules, instead of the networks of the
 server.
 
+### Ports in the access rules
+
+A rule can end with ports (`network.Ports`): `tcp`, `udp` with a list of ports and ranges, `tcp/80,443,8000-8090`, or
+alone for all of theirs, and `icmp` (ICMPv6 for IPv6), at most 32 ports and ranges a rule. They're kept after the
+address or the name, written one way (`10.0.0.5/32 tcp/3389 icmp`: lowercase, sorted, merged), in `peers.access` with
+the rest (no schema change; an older version can't read such a rule, so the firewall leaves it out and the peer
+reaches less, never more). Wrong ports: `access`: `invalid_ports`. A rule with ports is a rule of its own after the
+set of the rules without ports, one per protocol: `ip saddr <peer> ip daddr <its network> tcp dport { 80, 443 }
+accept`; it can overlap the others. A name with ports learns its addresses in a set of those ports,
+`<wg>_lp[6]_<FNV-32 of their text>`, used as `@<wg>_learned` is but with the ports (the stand-in addresses too); a
+name that several rules match learns for the ports of each, and for everything when one of them has none. The learned
+addresses keep their ports across a restart (`"address ports"` in the meta key `names`). The configuration file
+doesn't change: it routes the address all the same. On a routed server with `inbound`, the addresses of a rule with
+ports can start connections to the peer, as without ports: the ports are for the connections the peer starts. The
+peer's form shows the rules in three columns, a row for each protocol (`rowsOf` in `web/src/addresses.ts`: TCP and
+UDP with the same ports are one row, **TCP and UDP**), and writes the rows of an address back as one rule
+(`rulesOf`), so a rule saved without a change stays the same text. A rule it can't show stays as text in the first
+column, for the server to judge.
+
 ### Names in the access rules
 
 A rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under `corp.lan` at any depth (not
@@ -490,10 +528,17 @@ DNS answers of the peer:
   <stand-ins>` before the rules of its peers, so a stand-in address that wasn't translated goes nowhere, and accepts
   the translated connections by their mark; `postrouting` sends them out with the address of the container, like the
   rest of the tunnel, routed server or not.
-- **Changes**: when the rules of a peer with names change, it's disabled or gets another user, or the networks of its
-  server change, what it learned is forgotten and its marked connections are deleted from conntrack
-  (`conntrack -D -s <peer> -m 0x00415701`), so the next packet goes through the rules of now; a restore deletes
-  them all. A new or deleted peer, and new keys, forget too.
+- **Changes**: when a peer with names is disabled or gets another user, or the networks of its server change, what
+  it learned is forgotten and its marked connections are deleted from conntrack (`conntrack -D -s <peer> -m
+  0x00415701`), so the next packet goes through the rules of now; a restore deletes them all. A new or deleted peer,
+  and new keys, forget too. When only its rules change, only what the names whose rules changed taught goes: each
+  learned address keeps the names that taught it, with until when each holds it open (16 at most, the latest), and
+  it stays while one of them still matches a rule with the same ports, until that name's time; else it goes, and
+  once the configuration is applied, its connections to that address are deleted (`conntrack -D -s <peer> -d
+  <address> -m 0x00415701`, every port), or all its marked ones past 32 addresses. A name whose ports changed goes:
+  the next answer, or Authway Server's own lookup of an exact name, learns it with the ports of now. The names are
+  saved with the addresses (`names` of each peer in the meta key `names`); an address saved by an older version,
+  without them, goes at the next change.
 
 What this can't do: queries the device sends another way (DNS over HTTPS or TLS) teach nothing, so the names of a
 wildcard inside the networks stay blocked (the exact names are looked up by the server) and their internet names go
@@ -519,6 +564,40 @@ its bytes added to the ones before. At start the interfaces are new: the open ro
 downloads them as CSV. A connection shorter than a minute is recorded once seen; a peer without keepalive that stays
 idle for 3 minutes is out, and back as a new connection when it sends again. The rows are kept as long as the rest
 of the history.
+
+## Flow logs
+
+Which destinations each peer reached (`internal/flows`, `internal/core/flowlog.go`, table `flows`, schema 14). Off
+by default: the setting `flow_logs` (meta, `off`, `internal` or `all`) and `flow_days` (1 to 365, 90 by default),
+in `PUT /api/settings`, and in the backups.
+
+**Where they come from.** `conntrack -E -e NEW,DESTROY -o xml,id -b 8388608`, one process in the network of the
+container while the flow logs are on, started again 30 seconds after it stops; nothing changes in the path of the
+packets. Each line is a `<flow>`: its original source, destination and port, the source of its answers (the real
+destination when the firewall translated it, a stand-in address say), its ID, and at its end the bytes of both
+directions, with `net.netfilter.nf_conntrack_acct=1` (`compose.yaml`; `flows.Accounting` reads it). The kernel sends
+the end of a connection when it forgets it: about 2 minutes after a TCP connection closes, 30 seconds after the last
+packet of UDP. When its buffer is full it drops events, and conntrack says so (`ENOBUFS`): counted as `lost`.
+
+**What's kept.** Only the connections whose source is an address of an enabled peer (`configureFlowsLocked`, at
+each apply and each change of the setting), never those to an address of Authway Server in a tunnel or redirected
+to it (the login page, the DNS of the names). With `internal`, only those to the networks of the peer's server, to
+the tunnels, to the stand-in network, or to an address that a name of its access rules gave (`noteName`, from
+`learnLocked`, even while the flow logs are off; its name is kept in the row, the latest one asked for an address of
+several names); with `all`, every one. The connections add up in memory by hour, peer,
+protocol, address and port (`flowRecorder`, with a lock of its own), each with its first and last time; the end of
+a connection adds its bytes to the row of its start, or counts it then when it started before the flow logs did.
+Every minute (`flows.Interval`) the rows go to the database in one transaction, outside the lock of the service:
+`AddFlow` adds them to the rows of the same key (`flows_by_key`, unique), so a row of an hour sums its minutes.
+
+**What it costs.** Memory: at most 200,000 connections followed for their bytes, 50,000 rows between two writings,
+65,536 names; past them, the bytes of a connection or a row of a minute are lost and counted (`dropped`). Disk: about
+180 bytes a row, at most `MaxFlowRows`, a million: every hour, the rows older than `flow_days` go, then the oldest
+hours past a million. The database: one transaction a minute. `GET /api/flows` (filter as the other lists, search in
+the names, the addresses and the ports, by `last_at`), `GET /api/flows/csv`, `GET /api/flows/status` →
+`{mode, days, recording, error, bytes, lost, dropped, rows, max_rows, oldest}`. The System page has the checks
+`flows` (recording, starting or stopped), `flows_bytes` (no accounting), `flows_lost` and `flows_full` (90% of the
+rows).
 
 ## Failed logins
 
@@ -773,7 +852,8 @@ their peers, and their ids. Not the history of the sessions and of the connectio
 certificate of the web UI, or the count of the changes (`version`, `updated_by`): it starts again at 1, and the
 restore logs every administrator out, their forms with them. The content is JSON with its own version (`BackupVersion`, 2 since the devices, 3 since the
 IPv6 networks, 4 since the routed servers, 5 since the access rules of the peers, 6 since Active Directory and its
-users, 7 since the names in the access rules); a restore takes that version and
+users, 7 since the names in the access rules, 8 since the approval of the devices and the ports in the access rules);
+a restore takes that version and
 the older ones, and refuses a newer one: an older Authway Server refuses a backup with IPv6 networks rather than lose
 them, with routed servers rather than translate them, or with access rules rather than open all the networks to the
 peers. A backup of version 1 has no device: the peers of the servers with binding enroll one at their next login. One

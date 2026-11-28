@@ -6,6 +6,7 @@ import AppIcon from '../../components/AppIcon.vue'
 import ConflictNotice from '../../components/ConflictNotice.vue'
 import UiButton from '../../components/UiButton.vue'
 import UiDrawer from '../../components/UiDrawer.vue'
+import UiHelp from '../../components/UiHelp.vue'
 import UiInput from '../../components/UiInput.vue'
 import UiListInput from '../../components/UiListInput.vue'
 import UiNotice from '../../components/UiNotice.vue'
@@ -59,11 +60,12 @@ const filesChange = computed(() => {
     form.value.network6.trim() !== s.network6
   )
 })
-const network6Help = computed(() =>
-  ipv6Off.value
-    ? `IPv6 isn't available to Authway Server: ${ipv6Off.value}.`
-    : 'Optional. Leave empty for IPv4 only. Each peer gets the matching IPv6 address (10.8.0.5 becomes …::5). IPv6 traffic leaves through Authway Server\'s own address, like IPv4.',
-)
+// why IPv6 can't be used, under the field; what it does, behind its (?)
+const network6Problem = computed(() => (ipv6Off.value ? `IPv6 isn't available to Authway Server: ${ipv6Off.value}.` : ''))
+const reachHelp =
+  "One way only: peers on the selected servers can reply, but can't start connections to this server. To allow the other direction, select this server in their settings."
+const network6Help =
+  "Leave empty for IPv4 only. Each peer gets the matching IPv6 address (10.8.0.5 becomes …::5). IPv6 traffic leaves through Authway Server's own address, like IPv4."
 // the IPv6 network of a server with peers changes: they keep working with their files, over IPv4
 const ipv6Changes = computed(() => {
   const s = props.server
@@ -172,6 +174,7 @@ function formOf(s: Server): ServerInput {
     fallback_endpoints: [...s.fallback_endpoints],
     device_binding: s.device_binding,
     machine_id: s.machine_id,
+    device_approval: s.device_approval,
     client_to_client: s.client_to_client,
     reachable_servers: [...s.reachable_servers].sort((a, b) => a - b),
     routed: s.routed,
@@ -201,6 +204,7 @@ const guard = useEditGuard(formOf, {
   fallback_endpoints: 'Fallback addresses',
   device_binding: 'Device binding',
   machine_id: 'Also check the computer',
+  device_approval: 'New peers need approval for their device',
   client_to_client: 'Peers can reach each other',
   reachable_servers: 'Servers peers can reach',
   routed: 'NAT or routed',
@@ -235,6 +239,7 @@ function blank(): ServerInput {
     fallback_endpoints: [],
     device_binding: false,
     machine_id: false,
+    device_approval: false,
     client_to_client: false,
     reachable_servers: [],
     routed: false,
@@ -292,6 +297,7 @@ async function save() {
     block_copies: form.value.detect_copies && form.value.block_copies,
     device_binding: gated.value && form.value.device_binding,
     machine_id: gated.value && form.value.device_binding && form.value.machine_id,
+    device_approval: gated.value && form.value.device_binding && form.value.device_approval,
     // the servers deleted meanwhile
     reachable_servers: form.value.reachable_servers
       .filter((id) => others.value.some((server) => server.id === id))
@@ -337,8 +343,8 @@ function setMode(mode: AuthMode) {
     <form id="server-form" class="space-y-8" novalidate @submit.prevent="save">
       <ConflictNotice :conflict="conflict" noun="server" @theirs="useTheirs" />
       <section class="space-y-5">
-        <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" helper="Letters, digits, spaces, dots and dashes, up to 32 characters. Used to name the configuration files." />
-        <UiToggle v-model="form.enabled" label="Enabled" description="A disabled server keeps its peers, but no one can connect." />
+        <UiInput v-model="form.name" label="Name" :error="fieldMessage(errors.name)" help="Letters, digits, spaces, dots and dashes, up to 32 characters. Used to name the configuration files." />
+        <UiToggle v-model="form.enabled" label="Enabled" help="A disabled server keeps its peers, but no one can connect." />
       </section>
 
       <section class="space-y-5">
@@ -348,14 +354,14 @@ function setMode(mode: AuthMode) {
           label="Public address"
           placeholder="vpn.example.com"
           :error="fieldMessage(errors.public_host)"
-          helper="The hostname or IP address peers connect to from the internet."
+          help="The hostname or IP address peers connect to from the internet."
         />
         <UiInput
           v-model="form.listen_port"
           label="UDP port"
           type="number"
           :error="fieldMessage(errors.listen_port)"
-          helper="Also publish this port in Docker, for example 51820:51820/udp."
+          help="Also publish this port in Docker, for example 51820:51820/udp."
         />
         <UiListInput
           v-model="form.fallback_endpoints"
@@ -363,7 +369,7 @@ function setMode(mode: AuthMode) {
           placeholder="vpn2.example.com:51820"
           add-label="Add fallback address"
           :error="fieldMessage(errors.fallback_endpoints)"
-          helper="Up to 4 other addresses for this server, such as the IP of a second internet line. The Authway app tries them if the public address doesn't respond; WireGuard apps ignore them. Without a port, the public address's port is used."
+          help="Up to 4 other addresses for this server, such as the IP of a second internet line. The Authway app tries them if the public address doesn't respond; WireGuard apps ignore them. Without a port, the public address's port is used."
         />
       </section>
 
@@ -375,7 +381,7 @@ function setMode(mode: AuthMode) {
           mono
           placeholder="10.8.0.0/24"
           :error="fieldMessage(errors.network)"
-          helper="The server uses the first address; peers get the following ones."
+          help="The server uses the first address; peers get the following ones."
         />
         <div>
           <UiInput
@@ -385,7 +391,8 @@ function setMode(mode: AuthMode) {
             optional
             placeholder="fd12:3456:789a:1::/64"
             :error="fieldMessage(errors.network6)"
-            :helper="network6Help"
+            :helper="network6Problem"
+            :help="network6Help"
           />
           <button
             v-if="!form.network6.trim() && !ipv6Off"
@@ -403,7 +410,7 @@ function setMode(mode: AuthMode) {
           placeholder="192.168.1.0/24"
           add-label="Add network"
           :error="fieldMessage(errors.networks)"
-          helper="Peers that use split tunneling send only these networks through the VPN. Peers that send all their traffic through the VPN can reach everything. IPv6 networks need an IPv6 VPN network."
+          help="Peers that use split tunneling send only these networks through the VPN. Peers that send all their traffic through the VPN can reach everything. IPv6 networks need an IPv6 VPN network."
         />
         <UiNotice v-if="ipv6Changes" tone="info">{{ ipv6Changes }}</UiNotice>
         <fieldset class="space-y-2.5">
@@ -447,7 +454,7 @@ function setMode(mode: AuthMode) {
           v-if="form.routed"
           v-model="form.inbound"
           label="Allow your networks to connect to peers"
-          :description="
+          :help="
             gated
               ? 'Devices on the networks above can open connections to logged-in peers. Each device\'s own firewall still applies.'
               : 'Devices on the networks above can open connections to any peer on this server. Each device\'s own firewall still applies.'
@@ -487,7 +494,7 @@ function setMode(mode: AuthMode) {
           placeholder="192.168.1.1"
           add-label="Add DNS server"
           :error="fieldMessage(errors.dns)"
-          helper="Peers with names in their access rules use Authway Server instead, which asks these servers."
+          help="Peers with names in their access rules use Authway Server instead, which asks these servers."
         />
       </section>
 
@@ -524,7 +531,7 @@ function setMode(mode: AuthMode) {
           label="Session length"
           :options="timeoutOptions"
           :error="fieldMessage(errors.session_timeout)"
-          helper="When it ends, the user must log in again. A session also ends after 5 minutes without traffic."
+          help="When it ends, the user must log in again. A session also ends after 5 minutes without traffic."
         />
         <UiNotice v-if="modeChanges" tone="warning">Peers that are logged in now will be logged out and need to log in again.</UiNotice>
         <UiNotice v-if="withoutUser" tone="warning">
@@ -536,25 +543,25 @@ function setMode(mode: AuthMode) {
 
       <section v-if="gated" class="space-y-5">
         <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Protection against shared configurations</h3>
-        <UiToggle v-model="locked" label="Lock each session to the IP it logged in from" :description="locked ? lockOn : lockOff" />
+        <UiToggle v-model="locked" label="Lock each session to the IP it logged in from" :help="locked ? lockOn : lockOff" />
         <p v-if="fieldMessage(errors.lock_endpoint)" class="text-xs text-red-700 dark:text-red-400">
           {{ fieldMessage(errors.lock_endpoint) }}
         </p>
         <UiToggle
           v-model="form.detect_copies"
           label="Detect two devices using the same configuration"
-          description="If a peer keeps switching between two public IPs, two devices are probably using it. The session ends and an alert is recorded. Two devices behind the same NAT can't be told apart."
+          help="If a peer keeps switching between two public IPs, two devices are probably using it. The session ends and an alert is recorded. Two devices behind the same NAT can't be told apart."
         />
         <UiToggle
           v-if="form.detect_copies"
           v-model="form.block_copies"
           label="Block the peer when this happens"
-          description="The peer stays blocked until an administrator clears its alerts or gives it new keys. If this is off, the user can simply log in again."
+          help="The peer stays blocked until an administrator clears its alerts or gives it new keys. If this is off, the user can simply log in again."
         />
         <UiToggle
           v-model="form.redirect"
           label="Redirect to the login page"
-          description="Before login, every website name points to this server, and any http:// address opens the login page. No other traffic gets through."
+          help="Before login, every website name points to this server, and any http:// address opens the login page. No other traffic gets through."
         />
       </section>
 
@@ -563,13 +570,19 @@ function setMode(mode: AuthMode) {
         <UiToggle
           v-model="form.device_binding"
           label="Only allow logins from the enrolled device"
-          description="The first device that logs in with a peer is enrolled. After that, only that device can log in, using the Authway app. A copied configuration file won't work anywhere else, even with the right password. Logging in from a browser or the WireGuard apps isn't possible."
+          help="The first device that logs in with a peer is enrolled. After that, only that device can log in, using the Authway app. A copied configuration file won't work anywhere else, even with the right password. Logging in from a browser or the WireGuard apps isn't possible."
         />
         <UiToggle
           v-if="form.device_binding"
           v-model="form.machine_id"
           label="Also check the computer"
-          description="The Authway app also sends a fingerprint of the computer's hardware, so a device key copied to another computer can't log in."
+          help="The Authway app also sends a fingerprint of the computer's hardware, so a device key copied to another computer can't log in."
+        />
+        <UiToggle
+          v-if="form.device_binding"
+          v-model="form.device_approval"
+          label="New peers need approval for their device"
+          help="A new device waits until an administrator approves it on the peer's page, which shows its computer name and public IP. This applies to peers you add from now on. Each peer can change it in its own form."
         />
         <UiNotice v-if="bindingStarts" tone="warning">
           Peers that are logged in now will be logged out. Their next login enrolls the device they use.
@@ -581,10 +594,13 @@ function setMode(mode: AuthMode) {
         <UiToggle
           v-model="form.client_to_client"
           label="Peers on this server can reach each other"
-          :description="gated ? 'Both peers must be logged in.' : 'All connections between peers on this server are allowed.'"
+          :help="gated ? 'Both peers must be logged in.' : 'All connections between peers on this server are allowed.'"
         />
         <fieldset v-if="others.length" class="space-y-2">
-          <legend class="text-sm font-medium">Peers on this server can also reach peers on</legend>
+          <legend class="flex items-center gap-1.5 text-sm font-medium">
+            Peers on this server can also reach peers on
+            <UiHelp :text="reachHelp" label="Peers on this server can also reach peers on" />
+          </legend>
           <label
             v-for="other in others"
             :key="other.id"
@@ -602,10 +618,6 @@ function setMode(mode: AuthMode) {
             </span>
             <span v-if="!other.enabled" class="text-xs text-slate-500">Disabled</span>
           </label>
-          <p class="text-xs text-slate-500 dark:text-slate-400">
-            One way only: peers on the selected servers can reply, but can't start connections to this server. To allow
-            the other direction, select this server in their settings.
-          </p>
           <p v-if="fieldMessage(errors.reachable_servers)" class="text-xs text-red-700 dark:text-red-400">
             {{ fieldMessage(errors.reachable_servers) }}
           </p>
@@ -632,7 +644,7 @@ function setMode(mode: AuthMode) {
             type="number"
             optional
             :error="fieldMessage(errors.public_port)"
-            helper="Set this if Docker or a router exposes the UDP port under a different number. 0 means the same as the UDP port."
+            help="Set this if Docker or a router exposes the UDP port under a different number. 0 means the same as the UDP port."
           />
           <UiInput
             v-model="form.mtu"
@@ -640,14 +652,14 @@ function setMode(mode: AuthMode) {
             type="number"
             optional
             :error="fieldMessage(errors.mtu)"
-            helper="0 uses WireGuard's default of 1420. Allowed range: 1280 to 1500."
+            help="0 uses WireGuard's default of 1420. Allowed range: 1280 to 1500."
           />
           <UiInput
             v-model="form.keepalive"
             label="Peer keepalive (seconds)"
             type="number"
             :error="fieldMessage(errors.keepalive)"
-            helper="Keeps the tunnel open through NAT and keeps sessions alive. 0 turns it off."
+            help="Keeps the tunnel open through NAT and keeps sessions alive. 0 turns it off."
           />
         </div>
       </section>

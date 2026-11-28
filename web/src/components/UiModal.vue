@@ -6,6 +6,8 @@ const stack: symbol[] = []
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
+import { helpOpen } from './UiHelp.vue'
+
 const props = withDefaults(defineProps<{ open: boolean; title: string; wide?: boolean }>(), { wide: false })
 const emit = defineEmits<{ close: [] }>()
 const me = Symbol()
@@ -15,7 +17,8 @@ let before: HTMLElement | null = null
 
 // on the window, before the drawers, which listen on the document
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape' && stack[stack.length - 1] === me) {
+  // an open help closes first
+  if (event.key === 'Escape' && stack[stack.length - 1] === me && !helpOpen()) {
     event.stopImmediatePropagation()
     emit('close')
   }

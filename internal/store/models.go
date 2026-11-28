@@ -96,6 +96,8 @@ type Server struct {
 	// sends a hash of the hardware ID of its machine. Only with a login
 	DeviceBinding bool
 	MachineID     bool
+	// DeviceApproval is what the new peers of the server get as their DeviceApproval
+	DeviceApproval bool
 	// the peers of the server reach each other, and the peers of the servers listed, by id: one way, the answers
 	// pass back
 	ClientToClient   bool
@@ -147,9 +149,12 @@ type Peer struct {
 	// the access rules: the networks the peer reaches, inside the ones of its server; nil for all of them
 	Access []string
 	// blocked after a copy of its configuration, until an administrator clears its alerts or gives it new keys
-	Blocked   bool
-	CreatedAt int64
-	UpdatedAt int64
+	Blocked bool
+	// on a server with device binding, a new device of the peer waits for an administrator to approve it before it
+	// logs in
+	DeviceApproval bool
+	CreatedAt      int64
+	UpdatedAt      int64
 	// Version counts the changes made by the administrators, from 1, and UpdatedBy made the latest: a form of the
 	// web UI saved over a change made since it opened is refused
 	Version   int64
@@ -178,11 +183,19 @@ type Device struct {
 	// the WireGuard public key the device gave its peer, "": the one of the configuration file
 	WireGuardKey   string
 	WireGuardKeyAt int64
+	// the device logged in, and waits for an administrator to approve it: until then it doesn't log in, and no other
+	// device enrolls
+	Pending bool
 }
 
-// Enrolled tells whether a device is enrolled.
+// Enrolled tells whether a device is enrolled: approved when it had to be.
 func (d *Device) Enrolled() bool {
-	return d != nil && d.Key != ""
+	return d != nil && d.Key != "" && !d.Pending
+}
+
+// Waiting tells whether a device logged in and waits for an administrator to approve it.
+func (d *Device) Waiting() bool {
+	return d != nil && d.Key != "" && d.Pending
 }
 
 // Connection is a run of handshakes of a peer, from one public IP: WireGuard has no connections.
@@ -416,16 +429,17 @@ func (t *Tx) DeleteUser(id int64) error {
 
 // Servers
 
-const serverColumns = "id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, version, updated_by"
+const serverColumns = "id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, version, updated_by, device_approval"
 
 func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	var s Server
-	var enabled, detect, block, redirect, binding, machineID, clientToClient, routed, inbound int
+	var enabled, detect, block, redirect, binding, machineID, clientToClient, routed, inbound, approval int
 	var networks, dns, fallbacks, reachable string
 	err := row.Scan(&s.ID, &s.Name, &s.Interface, &enabled, &s.ListenPort, &s.PublicHost, &s.PublicPort, &s.PrivateKey,
 		&s.Network, &s.Network6, &networks, &dns, &s.MTU, &s.Keepalive, &s.AuthMode, &s.SessionTimeout, &s.LockEndpoint, &detect,
 		&block, &redirect, &fallbacks, &binding, &machineID, &clientToClient, &reachable, &routed, &inbound, &s.CreatedAt,
-		&s.UpdatedAt, &s.Version, &s.UpdatedBy)
+		&s.UpdatedAt, &s.Version, &s.UpdatedBy, &approval)
+	s.DeviceApproval = approval != 0
 	s.Routed = routed != 0
 	s.Inbound = inbound != 0
 	s.Enabled = enabled != 0
@@ -465,12 +479,12 @@ func (t *Tx) Server(id int64) (*Server, error) {
 }
 
 func (t *Tx) CreateServer(s *Server) error {
-	result, err := t.q.Exec("INSERT INTO servers (id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	result, err := t.q.Exec("INSERT INTO servers (id, name, interface, enabled, listen_port, public_host, public_port, private_key, network, network6, networks, dns, mtu, keepalive, auth_mode, session_timeout, lock_endpoint, detect_copies, block_copies, redirect, fallback_endpoints, device_binding, machine_id, client_to_client, reachable_servers, routed, inbound, created_at, updated_at, updated_by, device_approval) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		nullID(s.ID), s.Name, s.Interface, boolInt(s.Enabled), s.ListenPort, s.PublicHost, s.PublicPort, s.PrivateKey, s.Network, s.Network6,
 		toJSON(s.Networks), toJSON(s.DNS), s.MTU, s.Keepalive, s.AuthMode, s.SessionTimeout, s.LockEndpoint,
 		boolInt(s.DetectCopies), boolInt(s.BlockCopies), boolInt(s.Redirect), toJSON(s.FallbackEndpoints),
 		boolInt(s.DeviceBinding), boolInt(s.MachineID), boolInt(s.ClientToClient), idsToJSON(s.ReachableServers),
-		boolInt(s.Routed), boolInt(s.Inbound), s.CreatedAt, s.UpdatedAt, s.UpdatedBy)
+		boolInt(s.Routed), boolInt(s.Inbound), s.CreatedAt, s.UpdatedAt, s.UpdatedBy, boolInt(s.DeviceApproval))
 	if err != nil {
 		return conflict(err)
 	}
@@ -480,12 +494,12 @@ func (t *Tx) CreateServer(s *Server) error {
 }
 
 func (t *Tx) UpdateServer(s *Server) error {
-	return updated(t.q.QueryRow("UPDATE servers SET name = ?, enabled = ?, listen_port = ?, public_host = ?, public_port = ?, private_key = ?, network = ?, network6 = ?, networks = ?, dns = ?, mtu = ?, keepalive = ?, auth_mode = ?, session_timeout = ?, lock_endpoint = ?, detect_copies = ?, block_copies = ?, redirect = ?, fallback_endpoints = ?, device_binding = ?, machine_id = ?, client_to_client = ?, reachable_servers = ?, routed = ?, inbound = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
+	return updated(t.q.QueryRow("UPDATE servers SET name = ?, enabled = ?, listen_port = ?, public_host = ?, public_port = ?, private_key = ?, network = ?, network6 = ?, networks = ?, dns = ?, mtu = ?, keepalive = ?, auth_mode = ?, session_timeout = ?, lock_endpoint = ?, detect_copies = ?, block_copies = ?, redirect = ?, fallback_endpoints = ?, device_binding = ?, machine_id = ?, client_to_client = ?, reachable_servers = ?, routed = ?, inbound = ?, updated_at = ?, updated_by = ?, device_approval = ?, version = version + 1 WHERE id = ? RETURNING version",
 		s.Name, boolInt(s.Enabled), s.ListenPort, s.PublicHost, s.PublicPort, s.PrivateKey, s.Network, s.Network6, toJSON(s.Networks),
 		toJSON(s.DNS), s.MTU, s.Keepalive, s.AuthMode, s.SessionTimeout, s.LockEndpoint, boolInt(s.DetectCopies),
 		boolInt(s.BlockCopies), boolInt(s.Redirect), toJSON(s.FallbackEndpoints), boolInt(s.DeviceBinding),
 		boolInt(s.MachineID), boolInt(s.ClientToClient), idsToJSON(s.ReachableServers), boolInt(s.Routed),
-		boolInt(s.Inbound), s.UpdatedAt, s.UpdatedBy, s.ID), &s.Version)
+		boolInt(s.Inbound), s.UpdatedAt, s.UpdatedBy, boolInt(s.DeviceApproval), s.ID), &s.Version)
 }
 
 func (t *Tx) DeleteServer(id int64) error {
@@ -495,17 +509,19 @@ func (t *Tx) DeleteServer(id int64) error {
 // Peers
 
 // the key the device gave the peer comes from its device: a peer has one device at most
-const peerColumns = "id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, version, updated_by, " +
+const peerColumns = "id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, version, updated_by, device_approval, " +
 	"COALESCE((SELECT wireguard_key FROM devices WHERE devices.peer_id = peers.id), ''), " +
 	"COALESCE((SELECT wireguard_key_at FROM devices WHERE devices.peer_id = peers.id), 0)"
 
 func scanPeer(row interface{ Scan(...any) error }) (*Peer, error) {
 	var p Peer
-	var enabled, routeAll, blocked int
+	var enabled, routeAll, blocked, approval int
 	var access string
 	var userID sql.NullInt64
 	err := row.Scan(&p.ID, &p.ServerID, &p.Name, &enabled, &userID, &p.Address, &p.PrivateKey, &p.PublicKey,
-		&p.PresharedKey, &routeAll, &blocked, &p.CreatedAt, &p.UpdatedAt, &access, &p.Version, &p.UpdatedBy, &p.DeviceKey, &p.DeviceKeyAt)
+		&p.PresharedKey, &routeAll, &blocked, &p.CreatedAt, &p.UpdatedAt, &access, &p.Version, &p.UpdatedBy, &approval,
+		&p.DeviceKey, &p.DeviceKeyAt)
+	p.DeviceApproval = approval != 0
 	p.Access = accessFromText(access)
 	p.Enabled = enabled != 0
 	p.RouteAll = routeAll != 0
@@ -549,9 +565,9 @@ func (t *Tx) Peer(id int64) (*Peer, error) {
 }
 
 func (t *Tx) CreatePeer(p *Peer) error {
-	result, err := t.q.Exec("INSERT INTO peers (id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	result, err := t.q.Exec("INSERT INTO peers (id, server_id, name, enabled, user_id, address, private_key, public_key, preshared_key, route_all, blocked, created_at, updated_at, access, updated_by, device_approval) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		nullID(p.ID), p.ServerID, p.Name, boolInt(p.Enabled), nullID(p.UserID), p.Address, p.PrivateKey, p.PublicKey, p.PresharedKey,
-		boolInt(p.RouteAll), boolInt(p.Blocked), p.CreatedAt, p.UpdatedAt, accessToText(p.Access), p.UpdatedBy)
+		boolInt(p.RouteAll), boolInt(p.Blocked), p.CreatedAt, p.UpdatedAt, accessToText(p.Access), p.UpdatedBy, boolInt(p.DeviceApproval))
 	if err != nil {
 		return conflict(err)
 	}
@@ -561,9 +577,9 @@ func (t *Tx) CreatePeer(p *Peer) error {
 }
 
 func (t *Tx) UpdatePeer(p *Peer) error {
-	return updated(t.q.QueryRow("UPDATE peers SET name = ?, enabled = ?, user_id = ?, address = ?, private_key = ?, public_key = ?, preshared_key = ?, route_all = ?, blocked = ?, updated_at = ?, access = ?, updated_by = ?, version = version + 1 WHERE id = ? RETURNING version",
+	return updated(t.q.QueryRow("UPDATE peers SET name = ?, enabled = ?, user_id = ?, address = ?, private_key = ?, public_key = ?, preshared_key = ?, route_all = ?, blocked = ?, updated_at = ?, access = ?, updated_by = ?, device_approval = ?, version = version + 1 WHERE id = ? RETURNING version",
 		p.Name, boolInt(p.Enabled), nullID(p.UserID), p.Address, p.PrivateKey, p.PublicKey, p.PresharedKey,
-		boolInt(p.RouteAll), boolInt(p.Blocked), p.UpdatedAt, accessToText(p.Access), p.UpdatedBy, p.ID), &p.Version)
+		boolInt(p.RouteAll), boolInt(p.Blocked), p.UpdatedAt, accessToText(p.Access), p.UpdatedBy, boolInt(p.DeviceApproval), p.ID), &p.Version)
 }
 
 func (t *Tx) DeletePeer(id int64) error {

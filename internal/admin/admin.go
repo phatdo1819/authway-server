@@ -393,6 +393,24 @@ func (a *Admin) Handler() http.Handler {
 		return a.core.AllowDevice(actor(who, r), id, input.Hours)
 	})
 	route("DELETE /api/peers/{id}/device", needOperator, withActorID(a.core.RevokeDevice))
+	// the device that waits for an administrator: approve it, or reject it. key_id names the one the page showed
+	deviceDecision := func(decide func(core.Actor, int64, string) (*core.PeerView, error)) handler {
+		return func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+			id, err := pathID(r)
+			if err != nil {
+				return nil, err
+			}
+			var input struct {
+				KeyID string `json:"key_id"`
+			}
+			if err := readJSON(r, &input); err != nil {
+				return nil, err
+			}
+			return decide(actor(who, r), id, input.KeyID)
+		}
+	}
+	route("POST /api/peers/{id}/device/approve", needOperator, deviceDecision(a.core.ApproveDevice))
+	route("POST /api/peers/{id}/device/reject", needOperator, deviceDecision(a.core.RejectDevice))
 	route("GET /api/alerts", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
 		return a.core.Alerts(0, limit(r))
 	})
@@ -465,6 +483,14 @@ func (a *Admin) Handler() http.Handler {
 	route("GET /api/events", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
 		return a.core.EventsPage(filter(r, false), r.URL.Query().Get("type"))
 	})
+	// the flow logs: which destinations the peers reached, by hour, and what they do
+	route("GET /api/flows", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		return a.core.FlowsPage(filter(r, false))
+	})
+	route("GET /api/flows/status", needViewer, func(w http.ResponseWriter, r *http.Request, who *identity) (any, error) {
+		return a.core.FlowStatus()
+	})
+	mux.Handle("GET /api/flows/csv", a.authenticatedRaw(needViewer, a.flowsCSV))
 	mux.Handle("GET /api/history/csv", a.authenticatedRaw(needViewer, a.historyCSV))
 	mux.Handle("GET /api/connections/csv", a.authenticatedRaw(needViewer, a.connectionsCSV))
 	mux.Handle("GET /api/events/csv", a.authenticatedRaw(needViewer, a.eventsCSV))

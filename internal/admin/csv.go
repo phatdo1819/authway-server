@@ -39,6 +39,26 @@ func (a *Admin) connectionsCSV(w http.ResponseWriter, r *http.Request, who *iden
 	writeCSV(w, "authway-connections", rows, page.Total)
 }
 
+func (a *Admin) flowsCSV(w http.ResponseWriter, r *http.Request, who *identity) {
+	page, err := a.core.FlowsPage(filter(r, true))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	rows := [][]string{{"hour", "server", "peer", "user", "protocol", "address", "port", "name", "connections",
+		"sent_bytes", "received_bytes", "first", "last"}}
+	for _, f := range page.Items {
+		port := ""
+		if f.Port != 0 {
+			port = strconv.Itoa(f.Port)
+		}
+		rows = append(rows, []string{isoTime(f.Hour), f.ServerName, f.PeerName, f.Username, f.Protocol, f.Address, port,
+			f.Name, strconv.FormatInt(f.Connections, 10), strconv.FormatInt(f.Sent, 10), strconv.FormatInt(f.Received, 10),
+			isoTime(f.FirstAt), isoTime(f.LastAt)})
+	}
+	writeCSV(w, "authway-flows", rows, page.Total)
+}
+
 func (a *Admin) eventsCSV(w http.ResponseWriter, r *http.Request, who *identity) {
 	page, err := a.core.EventsPage(filter(r, true), r.URL.Query().Get("type"))
 	if err != nil {

@@ -21,10 +21,12 @@ Once Authway Server is [installed](install.md):
    - the networks the peers reach, your LAN for example `192.168.1.0/24`, and the DNS servers of the peers. Leave the
      networks empty for a server that only sends some internet sites through the VPN, by name;
    - the login: key only, password, or password and code; then the protections against copies, device binding, NAT
-     or routed, and the traffic between peers. Each setting says what it does, and the **?** explains NAT and routed.
+     or routed, and the traffic between peers. The **?** next to a setting says what it does; the one by NAT and
+     routed opens a drawing.
 5. **Add a peer** to the server: on a server with login, choose its user. The address in the tunnel is the next free
    one. Under **Networks it reaches**, keep all the networks of the server, or choose **Only some of them**: an
-   address, `192.168.1.10` for one device, a network, or a name, `files.corp.lan` or `app.example.com` (see
+   address, `192.168.1.10` for one device, a network, or a name, `files.corp.lan` or `app.example.com`, and next to
+   it the traffic it allows: **All traffic**, or **TCP**, **UDP** or ping with some ports (see
    [Good to know](good-to-know.md#peers-and-devices)). On a server without networks, the peer has **Sites it reaches
    by name** instead. The configuration opens: download the file, or show the QR code to a phone.
 6. **Connect a device**: import the file in Authway, or in a WireGuard app and log in with a browser. See
@@ -51,7 +53,9 @@ the WireGuard apps reach the internet sites through stand-in addresses (198.18.x
 Import the file in [Authway](https://github.com/phatdo1819/authway). When the tunnel comes up, its login window opens
 by itself and asks for what the server needs: the password, and the code of the authenticator app. Authway is the only
 app that logs in on a server with **device binding**: it enrolls the computer at the first login, signs every login
-after, and then gives the peer a WireGuard key of its own.
+after, and then gives the peer a WireGuard key of its own. With **New devices need approval** on the peer, the
+computer waits after its first login until you approve it on the server's page. After each login, Authway also takes
+the peer's settings as they are now, so a change of its access rules needs no new file.
 
 ### With the official WireGuard apps
 

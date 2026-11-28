@@ -19,10 +19,12 @@ const MaxLength = 253
 // a label of a name: letters, digits, hyphens inside, and the underscores that some names of the local networks have
 var label = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$`)
 
-// Rule is a name, or with Wildcard every name under it, at any depth, but not the name itself.
+// Rule is a name, or with Wildcard every name under it, at any depth, but not the name itself. Ports is what an access
+// rule writes after the name, the traffic it allows to the addresses of the name: "" for all of it.
 type Rule struct {
 	Name     string
 	Wildcard bool
+	Ports    string
 }
 
 // Parse reads a rule as an administrator writes it: files.corp.lan or *.corp.lan, in any case, with a final dot or
@@ -70,11 +72,14 @@ func (r Rule) Matches(name string) bool {
 	return name == r.Name
 }
 
-// Rules are the names of a list of access rules: the entries that are names, not addresses or networks.
+// Rules are the names of a list of access rules, as they're kept: the entries that are names, not addresses or
+// networks, each with the ports written after it.
 func Rules(entries []string) []Rule {
 	var rules []Rule
 	for _, entry := range entries {
-		if rule, ok := Parse(entry); ok {
+		target, ports, _ := strings.Cut(strings.TrimSpace(entry), " ")
+		if rule, ok := Parse(target); ok {
+			rule.Ports = strings.TrimSpace(ports)
 			rules = append(rules, rule)
 		}
 	}

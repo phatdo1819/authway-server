@@ -194,9 +194,162 @@ export function address6Of(address: string, network: string, network6: string): 
   return formatIPv6(masked)
 }
 
-// isName tells whether an access rule is a name, files.corp.lan or *.corp.lan: neither an IPv4 address or network
-// (digits, dots and a slash) nor an IPv6 one
+// ruleTarget is what an access rule reaches, without the ports that can follow it: 10.0.0.5 of 10.0.0.5 tcp/3389
+export function ruleTarget(entry: string): string {
+  return entry.trim().split(/\s+/)[0] ?? ''
+}
+
+// isName tells whether an access rule is a name, files.corp.lan or *.corp.lan, with ports or not: neither an IPv4
+// address or network (digits, dots and a slash) nor an IPv6 one
 export function isName(entry: string): boolean {
-  const text = entry.trim()
+  const text = ruleTarget(entry)
   return text !== '' && !text.includes(':') && !/^[\d./]+$/.test(text)
+}
+
+// An access rule as the peer's form shows it, in three columns: the address, network or name, the traffic it allows,
+// and the ports of TCP and UDP ('' for all of them)
+export type RuleProtocol = 'all' | 'tcp' | 'udp' | 'both' | 'icmp'
+export interface AccessRow {
+  target: string
+  protocol: RuleProtocol
+  ports: string
+}
+
+export const ruleProtocols: { value: RuleProtocol; label: string }[] = [
+  { value: 'all', label: 'All traffic' },
+  { value: 'tcp', label: 'TCP' },
+  { value: 'udp', label: 'UDP' },
+  { value: 'both', label: 'TCP and UDP' },
+  { value: 'icmp', label: 'Ping (ICMP)' },
+]
+
+// the protocols with ports
+export function hasPorts(protocol: RuleProtocol): boolean {
+  return protocol === 'tcp' || protocol === 'udp' || protocol === 'both'
+}
+
+// the ports as typed, 80, 443 or 80 443 or 8000 - 8090, as the server takes them: 80,443 and 8000-8090
+export function portsText(typed: string): string {
+  return typed
+    .replace(/\s*-\s*/g, '-')
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .join(',')
+}
+
+// the most ports and ranges a rule can have, as the server says
+const maxPortItems = 32
+
+// whether the server takes the ports typed: 1 to 65535, a range from low to high. Empty is all of them
+export function portsValid(typed: string): boolean {
+  const items = portsText(typed).split(',').filter(Boolean)
+  return (
+    items.length <= maxPortItems &&
+    items.every((item) => {
+      const match = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(item)
+      if (!match) {
+        return false
+      }
+      const from = Number(match[1])
+      const to = match[2] === undefined ? from : Number(match[2])
+      return from >= 1 && to <= 65535 && from <= to
+    })
+  )
+}
+
+export function emptyRow(): AccessRow {
+  return { target: '', protocol: 'all', ports: '' }
+}
+
+// the rows of the rules as the server keeps them (10.0.0.5/32 tcp/3389 icmp): a row for each protocol, one for TCP and
+// UDP with the same ports. A rule the form can't show stays as it is in the first column, for the server to judge
+export function rowsOf(rules: string[]): AccessRow[] {
+  return rules.flatMap((rule) => {
+    const [target = '', ...words] = rule.trim().split(/\s+/)
+    if (words.length === 0) {
+      return [{ target, protocol: 'all' as const, ports: '' }]
+    }
+    // the ports of each protocol: undefined for none, '' for all of them
+    const lists: { tcp?: string; udp?: string } = {}
+    let icmp = false
+    for (const word of words) {
+      const slash = word.indexOf('/')
+      const protocol = (slash < 0 ? word : word.slice(0, slash)).toLowerCase()
+      const ports = slash < 0 ? '' : word.slice(slash + 1)
+      if (protocol === 'icmp' && slash < 0) {
+        icmp = true
+      } else if ((protocol === 'tcp' || protocol === 'udp') && (slash < 0 || ports !== '')) {
+        const known = lists[protocol]
+        // all of them stay all
+        lists[protocol] = known === '' || ports === '' ? '' : known === undefined ? ports : `${known},${ports}`
+      } else {
+        return [{ target: rule.trim(), protocol: 'all' as const, ports: '' }]
+      }
+    }
+    const rows: AccessRow[] = []
+    if (lists.tcp !== undefined && lists.tcp === lists.udp) {
+      rows.push({ target, protocol: 'both', ports: lists.tcp })
+    } else {
+      if (lists.tcp !== undefined) {
+        rows.push({ target, protocol: 'tcp', ports: lists.tcp })
+      }
+      if (lists.udp !== undefined) {
+        rows.push({ target, protocol: 'udp', ports: lists.udp })
+      }
+    }
+    if (icmp) {
+      rows.push({ target, protocol: 'icmp', ports: '' })
+    }
+    return rows
+  })
+}
+
+// the rules of the rows, as the server takes them: the rows of an address or a name with ports make one rule, as the
+// server keeps it (TCP 80,443 and ping: 10.0.0.0/24 tcp/80,443 icmp). Rows without an address are left out
+export function rulesOf(rows: AccessRow[]): string[] {
+  const rules: string[] = []
+  // the rule of each address or name with ports, by its place in the list
+  const limited = new Map<string, number>()
+  for (const row of rows) {
+    const target = row.target.trim()
+    if (!target) {
+      continue
+    }
+    const ports = hasPorts(row.protocol) ? portsText(row.ports) : ''
+    const word = (protocol: string) => (ports ? `${protocol}/${ports}` : protocol)
+    const words =
+      row.protocol === 'tcp'
+        ? [word('tcp')]
+        : row.protocol === 'udp'
+          ? [word('udp')]
+          : row.protocol === 'both'
+            ? [word('tcp'), word('udp')]
+            : row.protocol === 'icmp'
+              ? ['icmp']
+              : []
+    if (words.length === 0) {
+      rules.push(target)
+      continue
+    }
+    const key = target.toLowerCase()
+    const index = limited.get(key)
+    if (index === undefined) {
+      limited.set(key, rules.length)
+      rules.push([target, ...words].join(' '))
+    } else {
+      rules[index] += ` ${words.join(' ')}`
+    }
+  }
+  return rules
+}
+
+// what's wrong with a row: ports the server wouldn't take, or a protocol or ports without the address
+export function rowProblem(row: AccessRow): '' | 'ports' | 'target' {
+  if (hasPorts(row.protocol) && !portsValid(row.ports)) {
+    return 'ports'
+  }
+  if (!row.target.trim() && (row.protocol !== 'all' || row.ports.trim() !== '')) {
+    return 'target'
+  }
+  return ''
 }

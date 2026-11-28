@@ -2,12 +2,14 @@ package store
 
 // Devices
 
-const deviceColumns = "peer_id, window_until, device_key, kind, device_name, machine_id, enrolled_at, last_used_at, last_from, wireguard_key, wireguard_key_at"
+const deviceColumns = "peer_id, window_until, device_key, kind, device_name, machine_id, enrolled_at, last_used_at, last_from, wireguard_key, wireguard_key_at, pending"
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
+	var pending int
 	err := row.Scan(&d.PeerID, &d.WindowUntil, &d.Key, &d.Kind, &d.Name, &d.MachineID, &d.EnrolledAt, &d.LastUsedAt,
-		&d.LastFrom, &d.WireGuardKey, &d.WireGuardKeyAt)
+		&d.LastFrom, &d.WireGuardKey, &d.WireGuardKeyAt, &pending)
+	d.Pending = pending != 0
 	return &d, err
 }
 
@@ -37,13 +39,13 @@ func (t *Tx) Devices() (map[int64]Device, error) {
 
 // SaveDevice creates or replaces the device of a peer.
 func (t *Tx) SaveDevice(d *Device) error {
-	_, err := t.q.Exec(`INSERT INTO devices (`+deviceColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := t.q.Exec(`INSERT INTO devices (`+deviceColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (peer_id) DO UPDATE SET window_until = excluded.window_until, device_key = excluded.device_key,
 		kind = excluded.kind, device_name = excluded.device_name, machine_id = excluded.machine_id,
 		enrolled_at = excluded.enrolled_at, last_used_at = excluded.last_used_at, last_from = excluded.last_from,
-		wireguard_key = excluded.wireguard_key, wireguard_key_at = excluded.wireguard_key_at`,
+		wireguard_key = excluded.wireguard_key, wireguard_key_at = excluded.wireguard_key_at, pending = excluded.pending`,
 		d.PeerID, d.WindowUntil, d.Key, d.Kind, d.Name, d.MachineID, d.EnrolledAt, d.LastUsedAt, d.LastFrom,
-		d.WireGuardKey, d.WireGuardKeyAt)
+		d.WireGuardKey, d.WireGuardKeyAt, boolInt(d.Pending))
 	return conflict(err)
 }
 

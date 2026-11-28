@@ -261,6 +261,37 @@ func checks(s Snapshot, state State, readErr string, log *LogRing, now time.Time
 		}
 	}
 
+	// only when the flow logs are on
+	if f := state.Flows; f != nil {
+		what := "internal traffic"
+		if f.Mode == "all" {
+			what = "all traffic"
+		}
+		switch {
+		case f.Error != "":
+			add("flows", CheckError, "Flow logs aren't being recorded",
+				capitalize(f.Error)+". Authway Server tries again every 30 seconds.")
+		case !f.Recording:
+			add("flows", CheckUnknown, "Flow logs are starting", "They start recording within a few seconds.")
+		default:
+			add("flows", CheckOK, "Recording flow logs",
+				fmt.Sprintf("Of %s, kept %d days: %d rows of at most %d.", what, f.Days, f.Rows, f.MaxRows))
+		}
+		if !f.Bytes {
+			add("flows_bytes", CheckWarning, "Flow logs can't count bytes",
+				"The kernel doesn't count the bytes of each connection. Add net.netfilter.nf_conntrack_acct=1 to the sysctls of the authway-server service, as compose.yaml has it, then recreate the container.")
+		}
+		if f.Lost > 0 || f.Dropped > 0 {
+			add("flows_lost", CheckWarning, "Flow logs missed some connections",
+				fmt.Sprintf("Since Authway Server started, the kernel dropped connection events %d times and %d rows didn't fit. Those connections are missing from Activity › Flows.",
+					f.Lost, f.Dropped))
+		}
+		if f.MaxRows > 0 && f.Rows >= f.MaxRows*9/10 {
+			add("flows_full", CheckWarning, "Flow logs are nearly full",
+				fmt.Sprintf("%d of %d rows. The oldest hours go first: keep fewer days, or record internal traffic only.", f.Rows, f.MaxRows))
+		}
+	}
+
 	switch {
 	case s.Host.ClockSynced == nil:
 		add("clock", CheckUnknown, "Can't tell whether the clock is synchronized",

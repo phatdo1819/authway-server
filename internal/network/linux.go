@@ -355,6 +355,31 @@ func (l *Linux) ForgetLearned(addresses ...netip.Addr) error {
 	return errors.Join(errs...)
 }
 
+// ForgetLearnedTo deletes the conntrack entries of the connections of peers marked by a learned address, to some of
+// those addresses only (the original destination: a stand-in address, not the internet one it leads to).
+func (l *Linux) ForgetLearnedTo(learned ...Learned) error {
+	if _, err := exec.LookPath("conntrack"); err != nil {
+		return nil
+	}
+	mark := fmt.Sprintf("0x%08x", LearnedMark)
+	var errs []error
+	for _, entry := range learned {
+		if !entry.Peer.IsValid() || entry.Peer.Is6() != entry.Address.Is6() {
+			continue
+		}
+		family := "ipv4"
+		if entry.Peer.Is6() {
+			family = "ipv6"
+		}
+		err := run("", "conntrack", "-D", "-f", family, "-s", entry.Peer.String(), "-d", entry.Address.String(), "-m", mark)
+		// conntrack fails when it deletes nothing
+		if err != nil && !strings.Contains(err.Error(), "0 flow entries") {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (l *Linux) FlushRedirected(addresses ...netip.Addr) error {
 	if _, err := exec.LookPath("conntrack"); err != nil {
 		// without it, the redirected flows end with their conntrack timeouts: a few seconds for DNS

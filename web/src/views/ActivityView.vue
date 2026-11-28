@@ -6,6 +6,8 @@ import {
   type Alert,
   type Connection,
   type EventItem,
+  type Flow,
+  type FlowStatus,
   type HistoryFilter,
   type HistoryList,
   type Page,
@@ -19,7 +21,7 @@ import { alertKind, dateTime, duration, endReason, errorMessage, eventKind, even
 import { every } from '../polling'
 import { canManage, confirm, download, notify } from '../state'
 
-type Tab = 'sessions' | 'history' | 'connections' | 'alerts' | 'events'
+type Tab = 'sessions' | 'history' | 'connections' | 'flows' | 'alerts' | 'events'
 const pageSize = 100
 
 const tab = ref<Tab>('sessions')
@@ -28,6 +30,9 @@ const alerts = ref<Alert[]>([])
 const history = ref<Session[]>([])
 const connections = ref<Connection[]>([])
 const events = ref<EventItem[]>([])
+const flows = ref<Flow[]>([])
+// what the flow logs do, for the sentence above their list
+const flowStatus = ref<FlowStatus | null>(null)
 // the page of the list of the tab, from the server: how many rows match, which ones are shown
 const total = ref(0)
 const offset = ref(0)
@@ -48,16 +53,21 @@ const from = ref('')
 const to = ref('')
 const kind = ref<'' | 'web' | 'vpn'>('')
 
-const paged = computed(() => tab.value === 'history' || tab.value === 'connections' || tab.value === 'events')
+const paged = computed(() => tab.value === 'history' || tab.value === 'connections' || tab.value === 'flows' || tab.value === 'events')
 const filtered = computed(() =>
   Boolean(words.value || server.value || (paged.value && (from.value || to.value)) || (tab.value === 'events' && kind.value)),
 )
 const backwards = computed(() => Boolean(paged.value && from.value && to.value && from.value > to.value))
 const placeholder = computed(() =>
-  tab.value === 'events' ? 'User, peer, server, administrator, IP, detail' : 'User, peer, server, IP',
+  tab.value === 'events'
+    ? 'User, peer, server, administrator, IP, detail'
+    : tab.value === 'flows'
+      ? 'User, peer, server, destination, name, port'
+      : 'User, peer, server, IP',
 )
 const rangeText = computed(() => {
-  const shown = tab.value === 'history' ? history.value.length : tab.value === 'connections' ? connections.value.length : events.value.length
+  const lists: Partial<Record<Tab, unknown[]>> = { history: history.value, connections: connections.value, flows: flows.value }
+  const shown = (lists[tab.value] ?? events.value).length
   return `${(offset.value + 1).toLocaleString()}–${(offset.value + shown).toLocaleString()} of ${total.value.toLocaleString()}`
 })
 
@@ -101,12 +111,14 @@ const shownAlerts = computed(() =>
   alerts.value.filter((a) => matches([a.username, a.peer_name, a.server_name, ...a.addresses], a.server_id)),
 )
 
-function fetchPage(current: Tab): Promise<Page<Session> | Page<Connection> | Page<EventItem> | null> {
+function fetchPage(current: Tab): Promise<Page<Session> | Page<Connection> | Page<Flow> | Page<EventItem> | null> {
   switch (current) {
     case 'history':
       return api.history(filter())
     case 'connections':
       return api.connections(filter())
+    case 'flows':
+      return api.flows(filter())
     case 'events':
       return api.events(filter())
     default:
@@ -140,6 +152,9 @@ async function load() {
       history.value = page.items as Session[]
     } else if (current === 'connections') {
       connections.value = page.items as Connection[]
+    } else if (current === 'flows') {
+      flows.value = page.items as Flow[]
+      flowStatus.value = await api.flowStatus().catch(() => flowStatus.value)
     } else {
       events.value = page.items as EventItem[]
     }
@@ -183,6 +198,24 @@ function lasted(connection: Connection): string {
   const seconds = Math.max(0, end - connection.started_at)
   return seconds < 60 ? 'less than 1 min' : duration(seconds - (seconds % 60))
 }
+
+// the protocol and the port of a row of the flow logs: tcp/3389, icmp
+function flowPort(flow: Flow): string {
+  return flow.port ? `${flow.protocol}/${flow.port}` : flow.protocol
+}
+
+// what the flow logs record, above their list
+const flowText = computed(() => {
+  const status = flowStatus.value
+  if (!status) {
+    return ''
+  }
+  if (status.mode === 'off') {
+    return ''
+  }
+  const what = status.mode === 'all' ? 'all traffic of the peers' : "the peers' traffic to your networks, other peers and names in access rules"
+  return `Recording ${what}, by hour, kept for ${status.days} ${status.days === 1 ? 'day' : 'days'}: ${status.rows.toLocaleString()} rows.`
+})
 
 // every row that matches the filters, not only the page: the server makes the file
 async function downloadCSV() {
@@ -273,6 +306,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: 'sessions', label: 'Logged in' },
   { id: 'history', label: 'Login history' },
   { id: 'connections', label: 'Connections' },
+  { id: 'flows', label: 'Flows' },
   { id: 'alerts', label: 'Alerts' },
   { id: 'events', label: 'Events' },
 ]
@@ -356,6 +390,22 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
       WireGuard has no connections of its own, so a connection here is a series of handshakes from one public IP. Times
       are accurate to the minute. Date filters include connections that overlap the dates.
     </p>
+    <template v-else-if="tab === 'flows'">
+      <UiNotice v-if="flowStatus && flowStatus.mode === 'off'" tone="info" class="mt-3">
+        Flow logs are off. An administrator can turn them on in
+        <RouterLink to="/settings" class="font-medium underline">Settings</RouterLink>, to see which addresses and ports each
+        peer reaches.
+      </UiNotice>
+      <UiNotice v-else-if="flowStatus && flowStatus.error" tone="warning" class="mt-3">
+        Flow logs aren't being recorded right now: {{ flowStatus.error }}. See the System page.
+      </UiNotice>
+      <p v-if="flowText" class="mt-3 text-sm text-slate-500 dark:text-slate-400">
+        {{ flowText }}
+        {{ flowStatus && !flowStatus.bytes ? `Bytes aren't counted: see the System page.` : '' }}
+        Each row is the connections a peer started to one address and port during one hour. The CSV file includes up to
+        100,000 rows.
+      </p>
+    </template>
     <p v-else-if="paged" class="mt-3 text-sm text-slate-500 dark:text-slate-400">
       The CSV file includes up to 100,000 rows that match the filters, not just this page.
     </p>
@@ -444,6 +494,42 @@ const caption = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-4
             <tr v-if="!connections.length">
               <td colspan="6" class="px-4 py-8 text-center text-slate-500">
                 {{ filtered ? 'Nothing matches the filters.' : 'No connections yet.' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table v-else-if="tab === 'flows'" class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+          <thead class="bg-slate-50 text-left text-xs font-semibold tracking-wide text-slate-500 uppercase dark:bg-slate-800/50 dark:text-slate-400">
+            <tr>
+              <th scope="col" :class="th">Hour</th>
+              <th scope="col" :class="th">User</th>
+              <th scope="col" :class="th">Server · peer</th>
+              <th scope="col" :class="th">Destination</th>
+              <th scope="col" :class="th">Connections</th>
+              <th scope="col" :class="th">Traffic</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-200 dark:divide-slate-800">
+            <tr v-for="flow in flows" :key="flow.id">
+              <td class="px-4 py-3 whitespace-nowrap">
+                {{ dateTime(flow.first_at) }}
+                <p class="text-xs text-slate-500">last {{ dateTime(flow.last_at) }}</p>
+              </td>
+              <td class="px-4 py-3">{{ flow.username || '—' }}</td>
+              <td class="px-4 py-3">{{ flow.server_name }} · {{ flow.peer_name }}</td>
+              <td class="px-4 py-3">
+                <span v-if="flow.name" class="font-medium">{{ flow.name }}</span>
+                <p class="font-mono text-xs" :class="flow.name ? 'text-slate-500' : ''">{{ flow.address }} {{ flowPort(flow) }}</p>
+              </td>
+              <td class="px-4 py-3 whitespace-nowrap">{{ flow.connections.toLocaleString() }}</td>
+              <td class="px-4 py-3 whitespace-nowrap text-slate-600 dark:text-slate-300">
+                ↑ {{ formatBytes(flow.sent) }} · ↓ {{ formatBytes(flow.received) }}
+              </td>
+            </tr>
+            <tr v-if="!flows.length">
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500">
+                {{ filtered ? 'Nothing matches the filters.' : 'No flows recorded yet.' }}
               </td>
             </tr>
           </tbody>

@@ -213,6 +213,32 @@ var migrations = []string{
 	// of the directory has no password of its own, the directory checks it
 	`ALTER TABLE users ADD COLUMN directory_id TEXT NOT NULL DEFAULT '';
 	CREATE UNIQUE INDEX users_by_directory_id ON users (directory_id) WHERE directory_id != '';`,
+	// 13: the devices that wait for an administrator: the peers whose new device needs to be approved, the choice of
+	// the new peers of each server, and the device that logged in and waits for it
+	`ALTER TABLE servers ADD COLUMN device_approval INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE peers ADD COLUMN device_approval INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE devices ADD COLUMN pending INTEGER NOT NULL DEFAULT 0;`,
+	// 14: the flow logs: the connections of each peer to each destination and port, by hour, with their bytes
+	`CREATE TABLE flows (
+		id INTEGER PRIMARY KEY,
+		hour INTEGER NOT NULL,
+		server_id INTEGER NOT NULL,
+		peer_id INTEGER NOT NULL,
+		server_name TEXT NOT NULL,
+		peer_name TEXT NOT NULL,
+		username TEXT NOT NULL DEFAULT '',
+		protocol INTEGER NOT NULL,
+		address TEXT NOT NULL,
+		port INTEGER NOT NULL DEFAULT 0,
+		name TEXT NOT NULL DEFAULT '',
+		connections INTEGER NOT NULL DEFAULT 0,
+		sent INTEGER NOT NULL DEFAULT 0,
+		received INTEGER NOT NULL DEFAULT 0,
+		first_at INTEGER NOT NULL,
+		last_at INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX flows_by_key ON flows (hour, peer_id, protocol, address, port);
+	CREATE INDEX flows_by_time ON flows (last_at);`,
 }
 
 // Store is safe for concurrent use: database/sql serializes on its single connection.

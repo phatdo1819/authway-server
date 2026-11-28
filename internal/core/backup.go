@@ -23,7 +23,9 @@ import (
 // with their keys, password hashes and authenticator secrets, sealed with a passphrase (internal/backup). The
 // history of the sessions, the events and the alerts aren't in it.
 
-// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 7 added
+// BackupVersion is the version of the content of the backups: a restore takes this one and the older ones. 8 added
+// the approval of the devices, and the ports in the access rules: an older Authway Server would enroll the devices
+// that wait for an administrator, and refuse the ports. 7 added
 // the names in the access rules of the peers: an older Authway Server would refuse them. 6 added
 // the users of Active Directory and its settings: an older Authway Server would refuse their users without a password
 // hash. 5 added the access rules of the peers: an older Authway Server would let them reach all the networks of their
@@ -32,7 +34,7 @@ import (
 // the servers: an older Authway Server refuses the backup rather than lose them. 2 added
 // the devices, device binding and the traffic between peers: a backup of version 1 has neither, its peers enroll
 // a device when their server asks for one.
-const BackupVersion = 7
+const BackupVersion = 8
 
 var interfacePattern = regexp.MustCompile(`^wg[0-9]{1,3}$`)
 
@@ -61,6 +63,9 @@ type backupSettings struct {
 	AdminRememberDays *int `json:"admin_remember_days,omitempty"`
 	// Active Directory, with the password of its service account: nil when never set, and before version 6
 	Directory *DirectorySettings `json:"directory,omitempty"`
+	// the flow logs: "" and 0 when never set, and in the backups made before them: off, the default days
+	FlowLogs string `json:"flow_logs,omitempty"`
+	FlowDays int    `json:"flow_days,omitempty"`
 }
 
 // backupDevice is the device of a peer, or its enrollment: a restore on a new host keeps the devices enrolled,
@@ -77,6 +82,8 @@ type backupDevice struct {
 	LastFrom       string `json:"last_from"`
 	WireGuardKey   string `json:"wireguard_key"`
 	WireGuardKeyAt int64  `json:"wireguard_key_at"`
+	// it waits for an administrator to approve it, since version 8
+	Pending bool `json:"pending,omitempty"`
 }
 
 type backupAdmin struct {
@@ -133,6 +140,7 @@ type backupServer struct {
 	FallbackEndpoints []string `json:"fallback_endpoints"`
 	DeviceBinding     bool     `json:"device_binding"`
 	MachineID         bool     `json:"machine_id"`
+	DeviceApproval    bool     `json:"device_approval,omitempty"`
 	ClientToClient    bool     `json:"client_to_client"`
 	ReachableServers  []int64  `json:"reachable_servers"`
 	Routed            bool     `json:"routed,omitempty"`
@@ -157,6 +165,8 @@ type backupPeer struct {
 	UpdatedAt    int64  `json:"updated_at"`
 	// the access rules, since version 5: missing for all the networks of the server
 	Access []string `json:"access,omitempty"`
+	// since version 8
+	DeviceApproval bool `json:"device_approval,omitempty"`
 }
 
 // BackupSummary says what a backup has, before it's restored.
@@ -269,6 +279,20 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 		days := s.adminRememberDaysLocked()
 		remember = &days
 	}
+	flowMode := ""
+	if stored, err = q.Meta("flow_logs"); err != nil {
+		return nil, err
+	}
+	if stored != "" {
+		flowMode = s.flowModeLocked()
+	}
+	flowDays := 0
+	if stored, err = q.Meta("flow_days"); err != nil {
+		return nil, err
+	}
+	if stored != "" {
+		flowDays = s.flowDaysLocked()
+	}
 	var directorySettings *DirectorySettings
 	if stored, err = q.Meta(metaDirectory); err != nil {
 		return nil, err
@@ -284,7 +308,8 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 	content := &backupContent{
 		Version: BackupVersion, CreatedAt: now.Unix(), MadeBy: "Authway Server " + version,
 		Settings: backupSettings{PublicHost: host, PasswordPolicy: s.policyLocked(), RequireAdminMFA: s.requireAdminMFALocked(),
-			EnrollHours: hours, HistoryDays: days, AdminRememberDays: remember, Directory: directorySettings},
+			EnrollHours: hours, HistoryDays: days, AdminRememberDays: remember, Directory: directorySettings,
+			FlowLogs: flowMode, FlowDays: flowDays},
 		Admins: []backupAdmin{}, Users: []backupUser{}, Servers: []backupServer{}, Peers: []backupPeer{},
 		Devices: []backupDevice{},
 	}
@@ -321,9 +346,9 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 			Networks: v.Networks, DNS: v.DNS, MTU: v.MTU, Keepalive: v.Keepalive, AuthMode: v.AuthMode,
 			SessionTimeout: v.SessionTimeout, LockEndpoint: v.LockEndpoint, DetectCopies: v.DetectCopies,
 			BlockCopies: v.BlockCopies, Redirect: v.Redirect, FallbackEndpoints: v.FallbackEndpoints,
-			DeviceBinding: v.DeviceBinding, MachineID: v.MachineID, ClientToClient: v.ClientToClient,
-			ReachableServers: v.ReachableServers, Routed: v.Routed, Inbound: v.Inbound, CreatedAt: v.CreatedAt,
-			UpdatedAt: v.UpdatedAt,
+			DeviceBinding: v.DeviceBinding, MachineID: v.MachineID, DeviceApproval: v.DeviceApproval,
+			ClientToClient: v.ClientToClient, ReachableServers: v.ReachableServers, Routed: v.Routed, Inbound: v.Inbound,
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 		})
 	}
 	peers, err := q.Peers(0)
@@ -335,6 +360,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 			ID: p.ID, ServerID: p.ServerID, Name: p.Name, Enabled: p.Enabled, UserID: p.UserID, Address: p.Address,
 			PrivateKey: p.PrivateKey, PublicKey: p.PublicKey, PresharedKey: p.PresharedKey, RouteAll: p.RouteAll,
 			Blocked: p.Blocked, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, Access: p.Access,
+			DeviceApproval: p.DeviceApproval,
 		})
 	}
 	devices, err := q.Devices()
@@ -349,7 +375,7 @@ func (s *Service) backupContentLocked(now time.Time) (*backupContent, error) {
 		content.Devices = append(content.Devices, backupDevice{
 			PeerID: d.PeerID, WindowUntil: d.WindowUntil, Key: d.Key, Kind: d.Kind, Name: d.Name, MachineID: d.MachineID,
 			EnrolledAt: d.EnrolledAt, LastUsedAt: d.LastUsedAt, LastFrom: d.LastFrom, WireGuardKey: d.WireGuardKey,
-			WireGuardKeyAt: d.WireGuardKeyAt,
+			WireGuardKeyAt: d.WireGuardKeyAt, Pending: d.Pending,
 		})
 	}
 	return content, nil
@@ -442,6 +468,10 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 		if plan.settings.AdminRememberDays != nil {
 			remember = strconv.Itoa(*plan.settings.AdminRememberDays)
 		}
+		flowDays := ""
+		if plan.settings.FlowDays != 0 {
+			flowDays = strconv.Itoa(plan.settings.FlowDays)
+		}
 		directorySettings := ""
 		if plan.settings.Directory != nil {
 			data, err := json.Marshal(plan.settings.Directory)
@@ -453,6 +483,7 @@ func (s *Service) Restore(by Actor, password string, data []byte, passphrase str
 		for key, value := range map[string]string{
 			"public_host": plan.settings.PublicHost, "password_policy": string(policy), "require_admin_mfa": mfa,
 			"enroll_hours": hours, "history_days": days, metaRememberDays: remember, metaDirectory: directorySettings,
+			"flow_logs": plan.settings.FlowLogs, "flow_days": flowDays,
 		} {
 			if err := tx.SetMeta(key, value); err != nil {
 				return err
@@ -600,6 +631,12 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 	if days := plan.settings.AdminRememberDays; days != nil && (*days < 0 || *days > MaxAdminRememberDays) {
 		return nil, badBackup("the days administrator devices are remembered aren't valid")
 	}
+	if mode := plan.settings.FlowLogs; mode != "" && mode != FlowsOff && mode != FlowsInternal && mode != FlowsAll {
+		return nil, badBackup("the flow logs settings aren't valid")
+	}
+	if days := plan.settings.FlowDays; days != 0 && (days < 1 || days > MaxFlowDays) {
+		return nil, badBackup("the days of the flow logs aren't valid")
+	}
 	if plan.settings.Directory != nil {
 		checked, err := checkDirectory(*plan.settings.Directory, "")
 		if err != nil {
@@ -694,7 +731,8 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 			Keepalive: b.Keepalive, AuthMode: b.AuthMode, SessionTimeout: b.SessionTimeout,
 			LockEndpoint: b.LockEndpoint, DetectCopies: b.DetectCopies, BlockCopies: b.BlockCopies,
 			Redirect: b.Redirect, FallbackEndpoints: b.FallbackEndpoints, DeviceBinding: b.DeviceBinding,
-			MachineID: b.MachineID, ClientToClient: b.ClientToClient, Routed: b.Routed, Inbound: b.Inbound,
+			MachineID: b.MachineID, DeviceApproval: b.DeviceApproval, ClientToClient: b.ClientToClient, Routed: b.Routed,
+			Inbound: b.Inbound,
 			// checked below, once all the servers are known
 			ReachableServers: nil,
 		}
@@ -787,7 +825,7 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 			ID: b.ID, ServerID: b.ServerID, Name: name, Enabled: b.Enabled, UserID: b.UserID,
 			Address: address.String(), PrivateKey: private.String(), PublicKey: public.String(),
 			PresharedKey: b.PresharedKey, RouteAll: b.RouteAll, Blocked: b.Blocked, CreatedAt: b.CreatedAt,
-			UpdatedAt: b.UpdatedAt, Access: access,
+			UpdatedAt: b.UpdatedAt, Access: access, DeviceApproval: b.DeviceApproval,
 		})
 	}
 
@@ -820,8 +858,10 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 			b.MachineID != "" && !isMachineID(b.MachineID),
 			len(b.LastFrom) > 64 || strings.IndexFunc(b.LastFrom, unicode.IsControl) >= 0:
 			return nil, badBackup("the device of the peer %s isn't valid", short(name))
-		case b.WireGuardKey != "" && (b.Key == "" || !wireguardOK || usedKeys[b.WireGuardKey]):
+		case b.WireGuardKey != "" && (b.Key == "" || b.Pending || !wireguardOK || usedKeys[b.WireGuardKey]):
 			return nil, badBackup("the WireGuard key of the device of the peer %s isn't valid", short(name))
+		case b.Pending && b.Key == "":
+			return nil, badBackup("the device of the peer %s isn't valid", short(name))
 		}
 		devicePeers[b.PeerID] = true
 		if b.WireGuardKey != "" {
@@ -830,7 +870,7 @@ func (s *Service) checkBackup(content *backupContent, asker string) (*restorePla
 		plan.devices = append(plan.devices, store.Device{
 			PeerID: b.PeerID, WindowUntil: b.WindowUntil, Key: b.Key, Kind: b.Kind, Name: b.Name, MachineID: b.MachineID,
 			EnrolledAt: b.EnrolledAt, LastUsedAt: b.LastUsedAt, LastFrom: b.LastFrom, WireGuardKey: b.WireGuardKey,
-			WireGuardKeyAt: b.WireGuardKeyAt,
+			WireGuardKeyAt: b.WireGuardKeyAt, Pending: b.Pending,
 		})
 	}
 	plan.summary = summarize(content, asker)

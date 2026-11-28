@@ -211,7 +211,7 @@ async function close() {
       <UiToggle
         v-model="skip"
         label="Skip users that already exist"
-        description="Existing users are left unchanged, including their passwords. If this is off, existing users stop the import."
+        help="Existing users are left unchanged, including their passwords. If this is off, existing users stop the import."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </div>

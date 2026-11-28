@@ -22,6 +22,9 @@ type Settings struct {
 	HistoryDays int `json:"history_days"`
 	// the days an administrator who logged in with a code can log in from the same browser without one, 0 when off
 	AdminRememberDays int `json:"admin_remember_days"`
+	// the flow logs: off, internal or all (see flowlog.go), and the days they're kept
+	FlowLogs string `json:"flow_logs"`
+	FlowDays int    `json:"flow_days"`
 }
 
 // SettingsInput changes the settings: a missing field keeps its value.
@@ -32,7 +35,9 @@ type SettingsInput struct {
 	EnrollHours     *int            `json:"enroll_hours"`
 	HistoryDays     *int            `json:"history_days"`
 	// 0 turns it off
-	AdminRememberDays *int `json:"admin_remember_days"`
+	AdminRememberDays *int    `json:"admin_remember_days"`
+	FlowLogs          *string `json:"flow_logs"`
+	FlowDays          *int    `json:"flow_days"`
 }
 
 // metaNumber is a number of the settings, or its default when it's missing or out of its range
@@ -78,7 +83,8 @@ func (s *Service) settingsLocked() (Settings, error) {
 		return Settings{}, err
 	}
 	return Settings{PublicHost: host, PasswordPolicy: s.policyLocked(), RequireAdminMFA: s.requireAdminMFALocked(),
-		EnrollHours: s.enrollHoursLocked(), HistoryDays: s.historyDaysLocked(), AdminRememberDays: s.adminRememberDaysLocked()}, nil
+		EnrollHours: s.enrollHoursLocked(), HistoryDays: s.historyDaysLocked(), AdminRememberDays: s.adminRememberDaysLocked(),
+		FlowLogs: s.flowModeLocked(), FlowDays: s.flowDaysLocked()}, nil
 }
 
 func (s *Service) Settings() (Settings, error) {
@@ -109,6 +115,12 @@ func (s *Service) SetSettings(by Actor, input SettingsInput) (Settings, error) {
 	}
 	if input.AdminRememberDays != nil && (*input.AdminRememberDays < 0 || *input.AdminRememberDays > MaxAdminRememberDays) {
 		c.fail("admin_remember_days", "invalid")
+	}
+	if input.FlowLogs != nil && *input.FlowLogs != FlowsOff && *input.FlowLogs != FlowsInternal && *input.FlowLogs != FlowsAll {
+		c.fail("flow_logs", "invalid")
+	}
+	if input.FlowDays != nil && (*input.FlowDays < 1 || *input.FlowDays > MaxFlowDays) {
+		c.fail("flow_days", "invalid")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,6 +176,15 @@ func (s *Service) SetSettings(by Actor, input SettingsInput) (Settings, error) {
 				before.AdminRememberDays))
 		}
 	}
+	if input.FlowLogs != nil && *input.FlowLogs != before.FlowLogs {
+		values["flow_logs"] = *input.FlowLogs
+		changes = append(changes, "flow logs "+map[string]string{FlowsOff: "off", FlowsInternal: "on, internal traffic",
+			FlowsAll: "on, all traffic"}[*input.FlowLogs])
+	}
+	if input.FlowDays != nil && *input.FlowDays != before.FlowDays {
+		values["flow_days"] = strconv.Itoa(*input.FlowDays)
+		changes = append(changes, fmt.Sprintf("flow logs kept %d days, was %d", *input.FlowDays, before.FlowDays))
+	}
 	if len(values) > 0 {
 		err := s.db.Tx(func(tx *store.Tx) error {
 			for key, value := range values {
@@ -178,8 +199,12 @@ func (s *Service) SetSettings(by Actor, input SettingsInput) (Settings, error) {
 		}
 	}
 	// fewer days: the older rows go at the next pass, not in an hour
-	if input.HistoryDays != nil && *input.HistoryDays < before.HistoryDays {
+	if (input.HistoryDays != nil && *input.HistoryDays < before.HistoryDays) ||
+		(input.FlowDays != nil && *input.FlowDays < before.FlowDays) {
 		s.pruned = time.Time{}
+	}
+	if _, changed := values["flow_logs"]; changed {
+		s.configureFlowsLocked()
 	}
 	if len(changes) > 0 {
 		s.log.Info("settings changed", "by", actor.Username, "changes", strings.Join(changes, ", "))

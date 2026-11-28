@@ -2,8 +2,9 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { api, ApiError, type PasswordPolicy } from '../api'
+import { api, ApiError, type FlowMode, type PasswordPolicy } from '../api'
 import UiButton from '../components/UiButton.vue'
+import UiHelp from '../components/UiHelp.vue'
 import UiInput from '../components/UiInput.vue'
 import UiNotice from '../components/UiNotice.vue'
 import UiToggle from '../components/UiToggle.vue'
@@ -86,6 +87,25 @@ const savedDays = ref(90)
 const historyError = ref('')
 const savingHistory = ref(false)
 
+const flowMode = ref<FlowMode>('off')
+const flowDays = ref<string | number>(90)
+const savedFlowDays = ref(90)
+const flowError = ref('')
+const savingFlows = ref(false)
+const flowModes: { value: FlowMode; label: string; description: string }[] = [
+  { value: 'off', label: 'Off', description: 'Nothing is recorded.' },
+  {
+    value: 'internal',
+    label: 'Internal traffic',
+    description: "Connections to the servers' networks, to other peers, and to names in access rules.",
+  },
+  {
+    value: 'all',
+    label: 'All traffic',
+    description: 'Also the internet traffic of peers that send all their traffic through the VPN. Many more rows.',
+  },
+]
+
 const lengthHelper = computed(
   () => `From 8 to 64. Administrators always need at least ${adminMinPassword}, regardless of this setting.`,
 )
@@ -100,6 +120,8 @@ onMounted(async () => {
     rememberDays.value = settings.admin_remember_days
     enrollHours.value = settings.enroll_hours
     historyDays.value = savedDays.value = settings.history_days
+    flowMode.value = settings.flow_logs
+    flowDays.value = savedFlowDays.value = settings.flow_days
   } catch (e) {
     notify(errorMessage(e), 'error')
   }
@@ -132,6 +154,37 @@ async function saveHistory() {
     historyError.value = e instanceof ApiError && e.fields.history_days ? 'Enter 1 to 3650 days (10 years).' : errorMessage(e)
   } finally {
     savingHistory.value = false
+  }
+}
+
+async function saveFlows() {
+  flowError.value = ''
+  const days = Number(flowDays.value)
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    flowError.value = 'Enter 1 to 365 days.'
+    return
+  }
+  const unit = days === 1 ? 'day' : 'days'
+  if (
+    days < savedFlowDays.value &&
+    !(await confirm(
+      `Keep flow logs for only ${days} ${unit}?`,
+      `Flow logs older than ${days} ${unit} will be deleted within a few seconds. This can't be undone.`,
+      'Delete older flow logs',
+    ))
+  ) {
+    return
+  }
+  savingFlows.value = true
+  try {
+    const saved = await api.saveSettings({ flow_logs: flowMode.value, flow_days: days })
+    flowMode.value = saved.flow_logs
+    flowDays.value = savedFlowDays.value = saved.flow_days
+    notify('Settings saved.')
+  } catch (e) {
+    flowError.value = e instanceof ApiError && e.fields.flow_days ? 'Enter 1 to 365 days.' : errorMessage(e)
+  } finally {
+    savingFlows.value = false
   }
 }
 
@@ -278,7 +331,7 @@ async function saveMfa() {
             placeholder="vpn.example.com"
             :error="hostError"
             :disabled="!canEdit"
-            helper="The address new servers suggest for their peers. Existing servers keep their own; edit them to change it."
+            help="The address new servers suggest for their peers. Existing servers keep their own; edit them to change it."
           />
           <div v-if="canEdit" class="flex justify-end">
             <UiButton type="submit" variant="primary" :loading="savingHost">Save</UiButton>
@@ -287,18 +340,61 @@ async function saveMfa() {
       </section>
 
       <section :class="section">
-        <h2 class="text-base font-semibold">History</h2>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          How long Activity keeps logins, connections, events and alerts. Older entries are deleted every hour. Backups
-          don't include history.
-        </p>
+        <div class="flex items-center gap-1.5">
+          <h2 class="text-base font-semibold">History</h2>
+          <UiHelp
+            label="History"
+            text="How long Activity keeps logins, connections, events and alerts. Older entries are deleted every hour. Backups don't include history."
+          />
+        </div>
         <form class="mt-4 space-y-4" novalidate @submit.prevent="saveHistory">
           <div class="max-w-48">
-            <UiInput v-model="historyDays" label="Keep history for (days)" type="number" :error="historyError" :disabled="!canEdit" />
+            <UiInput
+              v-model="historyDays"
+              label="Keep history for (days)"
+              type="number"
+              :error="historyError"
+              :disabled="!canEdit"
+              help="From 1 to 3650 (10 years). 90 by default."
+            />
           </div>
-          <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">From 1 to 3650 (10 years). 90 by default.</p>
           <div v-if="canEdit" class="flex justify-end">
             <UiButton type="submit" variant="primary" :loading="savingHistory">Save</UiButton>
+          </div>
+        </form>
+      </section>
+
+      <section :class="section">
+        <div class="flex items-center gap-1.5">
+          <h2 class="text-base font-semibold">Flow logs</h2>
+          <UiHelp
+            label="Flow logs"
+            text="Which addresses and ports each peer connects to, by hour, with the bytes, in Activity › Flows. Authway Server reads the kernel's connection tracking and writes once a minute, so the VPN isn't slowed down. At most 1,000,000 rows, about 180 MB; the oldest hours go first. Backups don't include them."
+          />
+        </div>
+        <form class="mt-4 space-y-4" novalidate @submit.prevent="saveFlows">
+          <fieldset class="space-y-2" :disabled="!canEdit">
+            <legend class="sr-only">What to record</legend>
+            <label v-for="mode in flowModes" :key="mode.value" class="flex cursor-pointer gap-3">
+              <input v-model="flowMode" type="radio" name="flow-logs" :value="mode.value" class="mt-1 accent-sky-700" />
+              <span>
+                <span class="block text-sm font-medium">{{ mode.label }}</span>
+                <span class="block text-sm text-slate-500 dark:text-slate-400">{{ mode.description }}</span>
+              </span>
+            </label>
+          </fieldset>
+          <div class="max-w-48">
+            <UiInput
+              v-model="flowDays"
+              label="Keep flow logs for (days)"
+              type="number"
+              :error="flowError"
+              :disabled="!canEdit"
+              help="From 1 to 365. 90 by default."
+            />
+          </div>
+          <div v-if="canEdit" class="flex justify-end">
+            <UiButton type="submit" variant="primary" :loading="savingFlows">Save</UiButton>
           </div>
         </form>
       </section>
@@ -312,16 +408,17 @@ async function saveMfa() {
       class="mt-6 space-y-8"
     >
       <section :class="section">
-        <h2 class="text-base font-semibold">Password policy</h2>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Applies to passwords that users and administrators get from now on. Existing passwords keep working until they're
-          changed.
-        </p>
+        <div class="flex items-center gap-1.5">
+          <h2 class="text-base font-semibold">Password policy</h2>
+          <UiHelp
+            label="Password policy"
+            text="Applies to passwords that users and administrators get from now on. Existing passwords keep working until they're changed."
+          />
+        </div>
         <form class="mt-4 space-y-4" novalidate @submit.prevent="savePolicy">
           <div class="max-w-48">
-            <UiInput v-model="minLength" label="Minimum length" type="number" :disabled="!canEdit" />
+            <UiInput v-model="minLength" label="Minimum length" type="number" :disabled="!canEdit" :help="lengthHelper" />
           </div>
-          <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">{{ lengthHelper }}</p>
           <UiToggle v-model="policy.require_lower" label="Require a lowercase letter" :disabled="!canEdit" />
           <UiToggle v-model="policy.require_upper" label="Require an uppercase letter" :disabled="!canEdit" />
           <UiToggle v-model="policy.require_digit" label="Require a digit" :disabled="!canEdit" />
@@ -337,17 +434,24 @@ async function saveMfa() {
       </section>
 
       <section :class="section">
-        <h2 class="text-base font-semibold">Device binding</h2>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          On servers that use device binding, the first device to log in during this window is enrolled (for a new peer, a
-          peer with new keys, or a peer given to another user). After the window closes, no one can log in until an
-          administrator allows a device.
-        </p>
+        <div class="flex items-center gap-1.5">
+          <h2 class="text-base font-semibold">Device binding</h2>
+          <UiHelp
+            label="Device binding"
+            text="On servers that use device binding, the first device to log in during this window is enrolled (for a new peer, a peer with new keys, or a peer given to another user). After the window closes, no one can log in until an administrator allows a device."
+          />
+        </div>
         <form class="mt-4 space-y-4" novalidate @submit.prevent="saveEnroll">
           <div class="max-w-48">
-            <UiInput v-model="enrollHours" label="Enrollment time (hours)" type="number" :error="enrollError" :disabled="!canEdit" />
+            <UiInput
+              v-model="enrollHours"
+              label="Enrollment time (hours)"
+              type="number"
+              :error="enrollError"
+              :disabled="!canEdit"
+              help="From 1 to 720 (30 days). 72 by default."
+            />
           </div>
-          <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">From 1 to 720 (30 days). 72 by default.</p>
           <div v-if="canEdit" class="flex justify-end">
             <UiButton type="submit" variant="primary" :loading="savingEnroll">Save</UiButton>
           </div>
@@ -361,7 +465,7 @@ async function saveMfa() {
             v-model="requireMfa"
             label="Require an authenticator app"
             :disabled="!canEdit"
-            description="Every administrator also needs a code from an authenticator app to log in. Those without one must set it up first, and no one can remove theirs."
+            help="Every administrator also needs a code from an authenticator app to log in. Those without one must set it up first, and no one can remove theirs."
           />
           <UiNotice v-if="mfaError" tone="error">{{ mfaError }}</UiNotice>
           <div v-if="canEdit" class="flex justify-end">
@@ -369,14 +473,16 @@ async function saveMfa() {
           </div>
         </form>
         <form class="mt-6 space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800" novalidate @submit.prevent="saveRemember">
-          <p class="text-sm text-slate-500 dark:text-slate-400">
-            When administrators enter an authenticator code, they can tick "Remember this device". From that browser, the
-            password alone is then enough for this many days. A new password or authenticator ends it early.
-          </p>
           <div class="max-w-48">
-            <UiInput v-model="rememberDays" label="Remember devices for (days)" type="number" :error="rememberError" :disabled="!canEdit" />
+            <UiInput
+              v-model="rememberDays"
+              label="Remember devices for (days)"
+              type="number"
+              :error="rememberError"
+              :disabled="!canEdit"
+              help="When administrators enter an authenticator code, they can tick “Remember this device”. From that browser, the password alone is then enough for this many days. A new password or authenticator ends it early. From 0 to 90. 0 turns it off. 30 by default."
+            />
           </div>
-          <p class="-mt-2 text-xs text-slate-500 dark:text-slate-400">From 0 to 90. 0 turns it off. 30 by default.</p>
           <div v-if="canEdit" class="flex justify-end">
             <UiButton type="submit" variant="primary" :loading="savingRemember">Save</UiButton>
           </div>

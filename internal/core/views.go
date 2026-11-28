@@ -41,6 +41,7 @@ type ServerView struct {
 	Fallbacks      []string `json:"fallback_endpoints"`
 	DeviceBinding  bool     `json:"device_binding"`
 	MachineID      bool     `json:"machine_id"`
+	DeviceApproval bool     `json:"device_approval"`
 	ClientToClient bool     `json:"client_to_client"`
 	Reachable      []int64  `json:"reachable_servers"`
 	Routed         bool     `json:"routed"`
@@ -64,11 +65,14 @@ type ServerView struct {
 
 // DeviceView is the device of a peer of a server with device binding.
 type DeviceView struct {
-	// enrolled, waiting (a device can enroll until EnrollmentUntil) or closed
+	// enrolled, waiting (a device can enroll until EnrollmentUntil), pending (a device logged in and waits for an
+	// administrator to approve it) or closed
 	State           string `json:"state"`
 	EnrollmentUntil int64  `json:"enrollment_until"`
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
+	// of the device that waits: what approving or rejecting it names, see DeviceKeyID
+	KeyID string `json:"key_id,omitempty"`
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
 	// a machine ID is recorded
 	MachineID  bool   `json:"machine_id"`
 	EnrolledAt int64  `json:"enrolled_at"`
@@ -105,6 +109,8 @@ type PeerView struct {
 	Received     int64        `json:"received"`
 	Sent         int64        `json:"sent"`
 	Session      *SessionView `json:"session"`
+	// a new device waits for an administrator to approve it, on a server with device binding
+	DeviceApproval bool `json:"device_approval"`
 	// only on a server with device binding
 	Device    *DeviceView `json:"device"`
 	CreatedAt int64       `json:"created_at"`
@@ -275,8 +281,8 @@ func (s *Service) serverViewLocked(server *store.Server) (*ServerView, error) {
 		Keepalive: server.Keepalive, AuthMode: server.AuthMode, SessionTimeout: server.SessionTimeout,
 		LockEndpoint: server.LockEndpoint, DetectCopies: server.DetectCopies, BlockCopies: server.BlockCopies,
 		Redirect: server.Redirect, Fallbacks: server.FallbackEndpoints, DeviceBinding: server.DeviceBinding,
-		MachineID: server.MachineID, ClientToClient: server.ClientToClient, Reachable: server.ReachableServers,
-		Routed: server.Routed, Inbound: server.Inbound, Routes: routeViews(s.routesOf(server)),
+		MachineID: server.MachineID, DeviceApproval: server.DeviceApproval, ClientToClient: server.ClientToClient,
+		Reachable: server.ReachableServers, Routed: server.Routed, Inbound: server.Inbound, Routes: routeViews(s.routesOf(server)),
 		CreatedAt: server.CreatedAt, UpdatedAt: server.UpdatedAt, Version: server.Version, UpdatedBy: server.UpdatedBy,
 	}
 	if key, err := wgtypes.ParseKey(server.PrivateKey); err == nil {
@@ -378,8 +384,8 @@ func (s *Service) peerViewsLocked(peers []store.Peer) ([]PeerView, error) {
 		view := PeerView{
 			ID: peer.ID, ServerID: peer.ServerID, Name: peer.Name, Enabled: peer.Enabled, UserID: peer.UserID,
 			Username: names[peer.UserID], Address: peer.Address, PublicKey: peer.PublicKey, RouteAll: peer.RouteAll,
-			Access: append([]string{}, peer.Access...), Blocked: peer.Blocked, Alerts: alerts[peer.ID],
-			Connected: s.connectedLocked(stats), Received: stats.Received, Sent: stats.Sent,
+			Access: append([]string{}, peer.Access...), Blocked: peer.Blocked, DeviceApproval: peer.DeviceApproval,
+			Alerts: alerts[peer.ID], Connected: s.connectedLocked(stats), Received: stats.Received, Sent: stats.Sent,
 			CreatedAt: peer.CreatedAt, UpdatedAt: peer.UpdatedAt, Version: peer.Version, UpdatedBy: peer.UpdatedBy,
 		}
 		if server, ok := byID[peer.ServerID]; ok {
@@ -415,6 +421,11 @@ func deviceView(device *store.Device, now time.Time) *DeviceView {
 	switch view.State {
 	case DeviceWaiting:
 		view.EnrollmentUntil = device.WindowUntil
+	case DevicePending:
+		// when it logged in first, and last
+		view.Name, view.Kind, view.MachineID = device.Name, device.Kind, device.MachineID != ""
+		view.EnrolledAt, view.LastUsedAt, view.LastFrom = device.EnrolledAt, device.LastUsedAt, device.LastFrom
+		view.KeyID = DeviceKeyID(device.Key)
 	case DeviceEnrolled:
 		view.Name, view.Kind, view.MachineID = device.Name, device.Kind, device.MachineID != ""
 		view.EnrolledAt, view.LastUsedAt, view.LastFrom = device.EnrolledAt, device.LastUsedAt, device.LastFrom

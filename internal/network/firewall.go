@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -95,14 +96,62 @@ func learnedElements(server Server, ipv6 bool) string {
 	return strings.Join(elements, ", ")
 }
 
+// learnedPortsElements are the elements of the set of the addresses learned for the names of the rules with some
+// ports, of a version
+func learnedPortsElements(server Server, ipv6 bool, ports string) string {
+	family := ipFamily{"ip", ipv6}
+	var elements []string
+	seen := map[string]bool{}
+	for _, peer := range server.Peers {
+		key := family.address(peer)
+		if !peer.Names || !key.IsValid() || key.Is6() != ipv6 {
+			continue
+		}
+		for _, address := range peer.LearnedPorts[ports] {
+			if !address.IsValid() || address.Is6() != ipv6 || address.Is4In6() {
+				continue
+			}
+			element := key.String() + " . " + address.String()
+			if !seen[element] {
+				seen[element] = true
+				elements = append(elements, element)
+			}
+		}
+	}
+	return strings.Join(elements, ", ")
+}
+
+// namePorts are the ports of the rules of names with some, of the peers of a server, each once: a set of learned
+// addresses for each, sorted by their text
+func namePorts(server Server) []Ports {
+	var list []Ports
+	seen := map[string]bool{}
+	for _, peer := range server.Peers {
+		if !peer.Names {
+			continue
+		}
+		for _, ports := range peer.NamePorts {
+			if text := ports.String(); text != "" && !seen[text] {
+				seen[text] = true
+				list = append(list, ports)
+			}
+		}
+	}
+	slices.SortFunc(list, func(a, b Ports) int { return strings.Compare(a.String(), b.String()) })
+	return list
+}
+
 // LearnedCommand returns the nftables command that adds or removes a learned address of a peer
 func LearnedCommand(add bool, iface string, learned Learned) string {
 	verb := "delete"
 	if add {
 		verb = "add"
 	}
-	return fmt.Sprintf("%s element inet %s %s { %s . %s }", verb, Table, LearnedSet(iface, learned.Address.Is6()),
-		learned.Peer, learned.Address)
+	set := LearnedSet(iface, learned.Address.Is6())
+	if learned.Ports != "" {
+		set = LearnedPortsSet(iface, learned.Address.Is6(), learned.Ports)
+	}
+	return fmt.Sprintf("%s element inet %s %s { %s . %s }", verb, Table, set, learned.Peer, learned.Address)
 }
 
 // StandInMap is the map of the stand-in addresses to the internet addresses they lead to, for all the servers: only
@@ -198,6 +247,13 @@ func Ruleset(state State) string {
 			if server.IPv6() {
 				set(LearnedSet(server.Interface, true), "ipv6_addr . ipv6_addr", learnedElements(server, true))
 			}
+			for _, ports := range namePorts(server) {
+				text := ports.String()
+				set(LearnedPortsSet(server.Interface, false, text), "ipv4_addr . ipv4_addr", learnedPortsElements(server, false, text))
+				if server.IPv6() {
+					set(LearnedPortsSet(server.Interface, true, text), "ipv6_addr . ipv6_addr", learnedPortsElements(server, true, text))
+				}
+			}
 		}
 	}
 	if standingIn {
@@ -287,12 +343,20 @@ func Ruleset(state State) string {
 				}
 			}
 		}
-		// marked like the connections to the other learned addresses: they stay open when the stand-in address expires
+		// marked like the connections to the other learned addresses: they stay open when the stand-in address expires.
+		// Those of the names with ports, only for the traffic their ports allow
 		for _, server := range state.Servers {
 			if usesStandIns(state, server) {
 				line(2, "iifname %q%s ip daddr %s ip saddr . ip daddr @%s ct mark set 0x%08x dnat ip to ip daddr map @%s",
 					server.Interface, loggedIn(server, ipFamily{"ip", false}), state.StandInNetwork.Masked(),
 					LearnedSet(server.Interface, false), LearnedMark, StandInMap)
+				for _, ports := range namePorts(server) {
+					for _, match := range ports.matches(false) {
+						line(2, "iifname %q%s ip daddr %s ip saddr . ip daddr @%s %s ct mark set 0x%08x dnat ip to ip daddr map @%s",
+							server.Interface, loggedIn(server, ipFamily{"ip", false}), state.StandInNetwork.Masked(),
+							LearnedPortsSet(server.Interface, false, ports.String()), match, LearnedMark, StandInMap)
+					}
+				}
 			}
 		}
 		line(1, "}")
@@ -339,11 +403,20 @@ func Ruleset(state State) string {
 						line(2, `iifname != "wg*" oifname %q ct direction original %s daddr %s %s saddr { %s } accept`,
 							server.Interface, family.name, address, family.name, networks)
 					}
+					// the ports of a rule are for the connections the peer starts: what it reaches can start some to it
+					for _, rule := range portRules(peer, family) {
+						line(2, `iifname != "wg*" oifname %q ct direction original %s daddr %s %s saddr %s accept`,
+							server.Interface, family.name, address, family.name, rule.Prefix.Masked())
+					}
 				}
 				// and from the addresses its names had
 				if namePeers(server, family.ipv6) != "" {
 					line(2, `iifname != "wg*" oifname %q ct direction original %s daddr . %s saddr @%s accept`,
 						server.Interface, family.name, family.name, LearnedSet(server.Interface, family.ipv6))
+					for _, ports := range namePorts(server) {
+						line(2, `iifname != "wg*" oifname %q ct direction original %s daddr . %s saddr @%s accept`,
+							server.Interface, family.name, family.name, LearnedPortsSet(server.Interface, family.ipv6, ports.String()))
+					}
 				}
 				if peers := addresses(limited, family.ipv6); peers != "" {
 					line(2, "oifname %q ct direction original %s daddr { %s } drop", server.Interface, family.name, peers)
@@ -499,6 +572,12 @@ func limitedRules(server Server, line func(int, string, ...any)) {
 			if networks := prefixes(peer.Access, family.ipv6); networks != "" {
 				line(2, "%s saddr %s %s daddr { %s } accept", family.name, address, family.name, networks)
 			}
+			// a rule with ports: only the traffic they allow
+			for _, rule := range portRules(peer, family) {
+				for _, match := range rule.Ports.matches(family.ipv6) {
+					line(2, "%s saddr %s %s daddr %s %s accept", family.name, address, family.name, rule.Prefix.Masked(), match)
+				}
+			}
 		}
 		peers := addresses(limited, family.ipv6)
 		if peers == "" {
@@ -509,6 +588,12 @@ func limitedRules(server Server, line func(int, string, ...any)) {
 		if names := namePeers(server, family.ipv6); names != "" {
 			line(2, "%s saddr . %s daddr @%s ct mark set 0x%08x accept", family.name, family.name,
 				LearnedSet(server.Interface, family.ipv6), LearnedMark)
+			for _, ports := range namePorts(server) {
+				for _, match := range ports.matches(family.ipv6) {
+					line(2, "%s saddr . %s daddr @%s %s ct mark set 0x%08x accept", family.name, family.name,
+						LearnedPortsSet(server.Interface, family.ipv6, ports.String()), match, LearnedMark)
+				}
+			}
 			line(2, "%s saddr { %s } ct mark 0x%08x accept", family.name, names, LearnedMark)
 		}
 		// the peers ask the DNS servers of the configuration file, wherever they are
@@ -525,6 +610,17 @@ func limitedRules(server Server, line func(int, string, ...any)) {
 		}
 		line(2, "%s saddr { %s } %s daddr { %s } drop", family.name, peers, family.name, prefixes(private, family.ipv6))
 	}
+}
+
+// portRules are the access rules with ports of a peer, of a version
+func portRules(peer Peer, family ipFamily) []PortAccess {
+	var list []PortAccess
+	for _, rule := range peer.AccessPorts {
+		if address := rule.Prefix.Addr(); rule.Prefix.IsValid() && address.Is6() == family.ipv6 && !address.Is4In6() {
+			list = append(list, rule)
+		}
+	}
+	return list
 }
 
 // SessionCommand returns the nftables command that adds or removes a peer logged in, by one of its addresses: the

@@ -27,6 +27,8 @@ type Fake struct {
 	// the learned addresses, by interface, and the peers whose connections to them were closed
 	Learned   map[string]map[Learned]bool
 	Forgotten []netip.Addr
+	// the connections closed to some learned addresses only: the peer and the address
+	ForgottenTo []Learned
 	// the stand-in addresses, and the internet addresses they lead to
 	StandIns map[netip.Addr]netip.Addr
 	// see SetLive
@@ -64,6 +66,15 @@ func (f *Fake) Apply(state State) error {
 					key = peer.Address6
 				}
 				learned[Learned{Peer: key, Address: address}] = true
+			}
+			for ports, list := range peer.LearnedPorts {
+				for _, address := range list {
+					key := peer.Address
+					if address.Is6() {
+						key = peer.Address6
+					}
+					learned[Learned{Peer: key, Address: address, Ports: ports}] = true
+				}
 			}
 		}
 		f.Learned[server.Interface] = learned
@@ -136,11 +147,25 @@ func (f *Fake) ForgetLearned(addresses ...netip.Addr) error {
 	return nil
 }
 
-// Reaches tells whether a peer reaches a learned address on an interface.
-func (f *Fake) Reaches(iface string, peer, address netip.Addr) bool {
+// ForgetLearnedTo records the connections closed to some learned addresses only.
+func (f *Fake) ForgetLearnedTo(learned ...Learned) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.Learned[iface][Learned{Peer: peer, Address: address}]
+	f.ForgottenTo = append(f.ForgottenTo, learned...)
+	return nil
+}
+
+// Reaches tells whether a peer reaches a learned address on an interface, for all the traffic.
+func (f *Fake) Reaches(iface string, peer, address netip.Addr) bool {
+	return f.ReachesPorts(iface, peer, address, "")
+}
+
+// ReachesPorts tells whether a peer reaches a learned address on an interface, for the traffic of ports, by their
+// text.
+func (f *Fake) ReachesPorts(iface string, peer, address netip.Addr, ports string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Learned[iface][Learned{Peer: peer, Address: address, Ports: ports}]
 }
 
 func (f *Fake) AddSession(iface string, addresses ...netip.Addr) error {

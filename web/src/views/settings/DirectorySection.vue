@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 
 import { api, ApiError, type DirectorySettings, type DirectorySkip, type DirectoryTest, type DirectoryView } from '../../api'
 import UiButton from '../../components/UiButton.vue'
+import UiHelp from '../../components/UiHelp.vue'
 import UiInput from '../../components/UiInput.vue'
 import UiListInput from '../../components/UiListInput.vue'
 import UiNotice from '../../components/UiNotice.vue'
@@ -240,18 +241,19 @@ function reason(skip: DirectorySkip): string {
 
 <template>
   <section :class="section">
-    <h2 class="text-base font-semibold">Active Directory</h2>
-    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-      Add VPN users from an Active Directory group. Active Directory checks their password at every VPN login. Their
-      authenticator codes, peers and devices stay in Authway Server, as for other users. Administrators of this web UI
-      stay local.
-    </p>
+    <div class="flex items-center gap-1.5">
+      <h2 class="text-base font-semibold">Active Directory</h2>
+      <UiHelp
+        label="Active Directory"
+        text="Add VPN users from an Active Directory group. Active Directory checks their password at every VPN login. Their authenticator codes, peers and devices stay in Authway Server, as for other users. Administrators of this web UI stay local."
+      />
+    </div>
 
     <form class="mt-4 space-y-5" novalidate @submit.prevent="save">
       <UiToggle
         v-model="form.enabled"
         label="Sync users from Active Directory"
-        description="Members of the group become users here, and changes follow at each sync. Members who are disabled or leave the group are disabled here and logged out."
+        help="Members of the group become users here, and changes follow at each sync. Members who are disabled or leave the group are disabled here and logged out."
       />
       <UiListInput
         v-model="form.servers"
@@ -259,19 +261,25 @@ function reason(skip: DirectorySkip): string {
         placeholder="dc1.example.com"
         add-label="Add a domain controller"
         :error="message('servers')"
-        helper="Tried in order. Add :port only if it isn't the standard one."
+        help="Tried in order. Add :port only if it isn't the standard one."
       />
       <UiSelect
         v-model="form.security"
         label="Connection"
         :options="securities"
         :error="message('security')"
-        helper="Both are encrypted. Passwords are never sent in clear text."
+        help="Both are encrypted. Passwords are never sent in clear text."
       />
       <div>
-        <label for="directory-ca" class="mb-1.5 block text-sm font-medium text-slate-800 dark:text-slate-200">
-          CA certificate <span class="font-normal text-slate-500 dark:text-slate-400">(optional)</span>
-        </label>
+        <div class="mb-1.5 flex items-center gap-1.5">
+          <label for="directory-ca" class="block text-sm font-medium text-slate-800 dark:text-slate-200">
+            CA certificate <span class="font-normal text-slate-500 dark:text-slate-400">(optional)</span>
+          </label>
+          <UiHelp
+            label="CA certificate"
+            text="Only needed if your domain controllers use certificates from your own certificate authority, such as Active Directory Certificate Services. Paste the CA certificate in PEM format."
+          />
+        </div>
         <textarea
           id="directory-ca"
           v-model="form.ca_certificates"
@@ -286,10 +294,6 @@ function reason(skip: DirectorySkip): string {
           "
         />
         <p v-if="errors.ca_certificates" class="mt-1.5 text-sm text-rose-700 dark:text-rose-400">{{ message('ca_certificates') }}</p>
-        <p v-else class="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
-          Only needed if your domain controllers use certificates from your own certificate authority, such as Active
-          Directory Certificate Services. Paste the CA certificate in PEM format.
-        </p>
       </div>
       <UiInput
         v-model="form.bind_user"
@@ -297,7 +301,7 @@ function reason(skip: DirectorySkip): string {
         placeholder="svc-authway@example.com"
         autocomplete="off"
         :error="message('bind_user')"
-        helper="An account that can read the directory, as user@domain or its full DN. It needs no other permissions."
+        help="An account that can read the directory, as user@domain or its full DN. It needs no other permissions."
       />
       <UiInput
         v-model="password"
@@ -313,7 +317,7 @@ function reason(skip: DirectorySkip): string {
         placeholder="DC=example,DC=com"
         mono
         :error="message('base_dn')"
-        helper="Where to look for users. Usually your whole domain."
+        help="Where to look for users. Usually your whole domain."
       />
       <UiInput
         v-model="form.group"
@@ -321,26 +325,28 @@ function reason(skip: DirectorySkip): string {
         placeholder="CN=VPN Users,OU=Groups,DC=example,DC=com"
         mono
         :error="message('group')"
-        helper="The group's full distinguished name. Members of groups inside it count too. Don't use a primary group such as Domain Users, because Active Directory doesn't list its members this way."
+        help="The group's full distinguished name. Members of groups inside it count too. Don't use a primary group such as Domain Users, because Active Directory doesn't list its members this way."
       />
       <UiSelect
         v-model="form.username_attribute"
         label="Username"
         :options="usernames"
         :error="message('username_attribute')"
-        helper="What users enter on the VPN login page. EXAMPLE\alice works too, and so does alice@example.com with the logon name, or alice alone with the user principal name."
+        help="What users enter on the VPN login page. EXAMPLE\alice works too, and so does alice@example.com with the logon name, or alice alone with the user principal name."
       />
       <div class="max-w-48">
-        <UiInput v-model="minutes" label="Sync every (minutes)" type="number" :error="message('sync_minutes')" />
+        <UiInput
+          v-model="minutes"
+          label="Sync every (minutes)"
+          type="number"
+          :error="message('sync_minutes')"
+          help="From 5 to 1440. 15 by default. Logins always ask Active Directory directly, so a disabled account can't log in even before the next sync."
+        />
       </div>
-      <p class="-mt-3 text-xs text-slate-500 dark:text-slate-400">
-        From 5 to 1440. 15 by default. Logins always ask Active Directory directly, so a disabled account can't log in
-        even before the next sync.
-      </p>
       <UiToggle
         v-model="form.link_local_users"
         label="Take over local users with the same username"
-        description="A local user whose username matches a group member becomes that member's user. Their peers and authenticator stay, their password comes from Active Directory from then on, and they're logged out once."
+        help="A local user whose username matches a group member becomes that member's user. Their peers and authenticator stay, their password comes from Active Directory from then on, and they're logged out once."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
       <UiNotice v-if="test && test.error" tone="error" title="Couldn't read the group">{{ sentence(test.error) }}.</UiNotice>

@@ -199,6 +199,7 @@ const eventKinds: Record<string, string> = {
   device_enrolled: 'Device enrolled',
   device_mismatch: 'Login from a different device',
   device_key: 'Device created its key',
+  device_waiting: 'New device waiting for approval',
   host_address_changed: 'Docker host address changed',
   directory_failed: 'Active Directory sync failed',
   directory_restored: 'Active Directory sync works again',
@@ -218,6 +219,8 @@ const eventKinds: Record<string, string> = {
   alerts_cleared: 'Alerts cleared',
   device_allowed: 'New device allowed',
   device_revoked: 'Device revoked',
+  device_approved: 'Device approved',
+  device_rejected: 'Device rejected',
   user_added: 'User added',
   user_changed: 'User changed',
   user_deleted: 'User deleted',
@@ -256,6 +259,8 @@ const webKinds = new Set([
   'alerts_cleared',
   'device_allowed',
   'device_revoked',
+  'device_approved',
+  'device_rejected',
   'user_added',
   'user_changed',
   'user_deleted',
@@ -272,6 +277,7 @@ export function eventTone(kind: string): 'red' | 'amber' | 'green' | 'gray' | 's
     case 'directory_failed':
       return 'red'
     case 'directory_held':
+    case 'device_waiting':
       return 'amber'
     case 'directory_restored':
       return 'green'
@@ -281,12 +287,14 @@ export function eventTone(kind: string): 'red' | 'amber' | 'green' | 'gray' | 's
     case 'admin_deleted':
     case 'peer_keys':
     case 'device_revoked':
+    case 'device_rejected':
     case 'host_address_changed':
       return 'amber'
     case 'session_resumed':
     case 'admin_mfa_on':
     case 'device_enrolled':
     case 'device_key':
+    case 'device_approved':
       return 'green'
     case 'admin_login':
     case 'admin_added':
@@ -399,6 +407,7 @@ const messages: Record<string, string> = {
   has_peers: "Can't be changed while the server has peers, because their configuration files use the current addresses.",
   outside: "Not inside this server's networks.",
   names_only: 'This server has no networks, so enter only names, such as app.example.com.',
+  invalid_ports: 'Enter ports from 1 to 65535: one such as 443, several such as 80, 443, or a range such as 8000-8090, up to 32 in a rule.',
   in_peer_access: 'A peer still has access to part of a network you removed. Change that peer first.',
   has_peer: 'This user already has a peer on this server.',
   network_full: "No free addresses left in this server's network.",
@@ -421,6 +430,7 @@ const messages: Record<string, string> = {
   server_not_found: 'One of these servers no longer exists. Reload the page.',
   duplicate_server: 'A server is listed twice.',
   device_binding_not_required: "This server doesn't require enrolled devices.",
+  not_waiting: 'No device is waiting for approval anymore. Someone may have approved or rejected it already.',
   directory: 'This comes from Active Directory. Change it there.',
   // the rows of an import
   twice: 'This username already appears in an earlier row.',

@@ -66,6 +66,17 @@
   long as the host has the same public address and ports.
 - **The history** (logins, connections, events, alerts) stays 90 days by default: **Settings > General > History**, from 1 day
   to 10 years. Fewer days delete the older rows within seconds.
+- **Flow logs** are off until you turn them on in **Settings > General > Flow logs**: *Internal traffic* records the
+  connections of the peers to the networks of their server, to other peers and to the names of their access rules;
+  *All traffic* also the internet of the peers that send all their traffic through the VPN, which makes many more
+  rows. Each row is the connections of one peer to one address and port during one hour. Authway Server reads the
+  connection tracking of the kernel and writes the rows once a minute, so the tunnels aren't slowed down. A
+  connection's bytes are counted when the kernel forgets it, about 2 minutes after it closes, and only with
+  `net.netfilter.nf_conntrack_acct=1` in the `sysctls` of `compose.yaml`, which has it since this version: an older
+  `compose.yaml` kept by an update needs that line, then `docker compose up -d`. They're kept 90 days by default, 1 to
+  365, and a million rows at most, about 180 MB: past it, the oldest hours go first. With internal traffic, 100 peers
+  make a few thousand rows a day. Not in the backups. The System page says when they can't be recorded, when they
+  miss connections because the server is too busy, and when they're nearly full.
 
 ## Administrators
 
@@ -87,13 +98,26 @@
 - **Access rules**: in the menu of a peer, **Edit > Networks it reaches > Only some of them**, addresses or networks
   inside the ones of the server, or names (below). They apply at once, to the connections already open too. The peer
   still asks the DNS servers of the server, wherever they are, on port 53 only; its configuration file routes its
-  networks and those DNS servers, so download it again when the form says the file changes. The server can't drop a
+  networks and those DNS servers. When the form says the file changes, the Authway app (0.4.0 or later) takes the new
+  settings by itself at its next login; for the WireGuard apps, download the file again. The server can't drop a
   network that a peer still reaches part of: change the peer first. The traffic between peers doesn't depend on them.
+- **Ports in the access rules**: each rule of the peer's form has three columns: the address, network or name, the
+  traffic (**All traffic**, **TCP**, **UDP**, **TCP and UDP**, or **Ping (ICMP)**), and the ports: one such as `3389`,
+  several such as `80, 443`, or a range such as `8000-8090`, up to 32 in a rule. Empty ports are all the ports of that
+  protocol. For TCP 3389 to `10.0.0.5` and ping to it too, add two rows with the same address. **All traffic** allows
+  everything, as before. The API and the backups keep a rule as text, the ports after the address:
+  `10.0.0.5/32 tcp/3389 icmp`, `files.corp.lan tcp/445`, `10.0.0.0/24 tcp/80,443 udp/53`, or `tcp` alone for every
+  TCP port. The ports limit the
+  connections the peer starts: on a routed server with **Networks can connect to peers**, the addresses of a rule can
+  still start connections to the peer. The configuration file doesn't change with the ports.
 - **Names in the access rules**: a rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under
   `corp.lan`. The device then uses Authway Server as its DNS server, which asks the server's DNS servers. Each answer
   for one of the peer's names lets it reach the addresses given, for as long as the answer holds and 10 minutes more.
   Connections opened meanwhile stay open; new ones need a new answer, which the device asks for by itself. What the
-  peers learned survives a restart of Authway Server. A private address outside the server's networks doesn't go
+  peers learned survives a restart of Authway Server. Changing a peer's rules closes only the names whose rule
+  changed (removed, or with other ports), and the connections to them; its other names and their connections stay
+  open. A name that changed works again at the device's next DNS answer, at once for an exact name inside your
+  networks, which Authway Server looks up itself. A private address outside the server's networks doesn't go
   through the VPN: add its network to the server.
 - **Exact names are looked up by Authway Server too**: for `files.corp.lan`, but not `*.corp.lan`, Authway Server asks
   the DNS servers itself while the peer is logged in (always, on a server without a login), and keeps the addresses
@@ -128,6 +152,14 @@
   computer, choose **Replace the device** in the menu of the
   peer: the next computer that logs in is enrolled. **Revoke the device** leaves the peer without one until you
   allow a new one. Turning binding on logs out the peers of the server: they log in again from their computer.
+- **Approving new devices**: with **New devices need approval** in the form of a peer, its first computer logs in
+  with the right password and code, then waits: the peer's row shows *Waiting for approval*, with the computer's name
+  and public IP, and the page says so. **Approve** enrolls it, and the user logs in again on it. **Reject** forgets
+  it, and the next computer that logs in waits in its place; if you don't know the computer, also change the user's
+  password. While one computer waits, no other one takes its place. The server's **New peers need approval for their
+  device** is what the peers you add get; each peer keeps its own choice. Turned off for a peer, the computer that
+  waits is enrolled at its next login. The Authway app 0.4.0 or later says the computer waits; an older one says that
+  no device can enroll.
 - **The WireGuard key of the device**: once Authway gave it, a configuration file downloaded again doesn't connect,
   even on the same computer. Replace the device, or give the peer new keys, to start again with a file. Until the
   computer is enrolled, a copy of the file still connects, like without binding: it just can't log in.

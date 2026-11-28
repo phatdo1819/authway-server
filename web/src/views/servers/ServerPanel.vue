@@ -204,6 +204,39 @@ async function run(action: () => Promise<unknown>, done: string) {
   emit('changed')
 }
 
+// a new device that waits for an administrator: approved, it logs in from now on; rejected, the next device that logs
+// in waits in its place
+const pendingPeers = computed(() => (bound.value ? peers.value.filter((peer) => peer.device?.state === 'pending') : []))
+async function approveDevice(peer: Peer) {
+  const device = peer.device
+  if (!device?.key_id) {
+    return
+  }
+  const ok = await confirm(
+    `Approve ${device.name || 'this device'} for ${peer.name}?`,
+    `It logged in from ${device.last_from || 'an unknown IP'}. Once approved, it's the only device that can log in with this peer. The user logs in again on it.`,
+    'Approve',
+    false,
+  )
+  if (ok) {
+    await run(() => api.approveDevice(peer.id, device.key_id ?? ''), `${device.name || 'The device'} is approved for ${peer.name}.`)
+  }
+}
+async function rejectDevice(peer: Peer) {
+  const device = peer.device
+  if (!device?.key_id) {
+    return
+  }
+  const ok = await confirm(
+    `Reject ${device.name || 'this device'} for ${peer.name}?`,
+    "It can't log in. The next device that logs in with this peer waits for approval in its place. If you don't know this device, also change the user's password.",
+    'Reject',
+  )
+  if (ok) {
+    await run(() => api.rejectDevice(peer.id, device.key_id ?? ''), `${device.name || 'The device'} is rejected for ${peer.name}.`)
+  }
+}
+
 async function deleteServer() {
   const ok = await confirm(
     `Delete ${props.server.name}?`,
@@ -237,7 +270,12 @@ function peerMenu(peer: Peer): MenuItem[] {
       action: () => run(() => api.logoutPeer(peer.id), `${peer.name} is logged out.`),
     })
   }
-  if (bound.value && peer.device) {
+  if (bound.value && peer.device?.state === 'pending') {
+    items.push(
+      { label: 'Approve device', icon: 'check', action: () => approveDevice(peer) },
+      { label: 'Reject device', icon: 'close', danger: true, action: () => rejectDevice(peer) },
+    )
+  } else if (bound.value && peer.device) {
     items.push({
       label: peer.device.state === 'enrolled' ? 'Replace device' : 'Allow a device',
       icon: 'device',
@@ -256,23 +294,23 @@ function peerMenu(peer: Peer): MenuItem[] {
         }
       },
     })
-    if (peer.device.state !== 'closed') {
-      items.push({
-        label: 'Revoke device',
-        icon: 'close',
-        danger: true,
-        action: async () => {
-          const ok = await confirm(
-            `Revoke the device for ${peer.name}?`,
-            'The session ends, and no one can log in with this peer until you allow a new device.',
-            'Revoke',
-          )
-          if (ok) {
-            await run(() => api.revokeDevice(peer.id), `Device for ${peer.name} revoked.`)
-          }
-        },
-      })
-    }
+  }
+  if (bound.value && peer.device && peer.device.state !== 'closed') {
+    items.push({
+      label: 'Revoke device',
+      icon: 'close',
+      danger: true,
+      action: async () => {
+        const ok = await confirm(
+          `Revoke the device for ${peer.name}?`,
+          'The session ends, and no one can log in with this peer until you allow a new device.',
+          'Revoke',
+        )
+        if (ok) {
+          await run(() => api.revokeDevice(peer.id), `Device for ${peer.name} revoked.`)
+        }
+      },
+    })
   }
   items.push(
     {
@@ -310,6 +348,19 @@ const serverMenu = computed<MenuItem[]>(() => [
   { label: 'Edit', icon: 'edit', action: () => emit('edit', props.server) },
   { label: 'Delete', icon: 'trash', danger: true, action: deleteServer },
 ])
+
+// the details of a device that waits for approval, on hover
+function pendingTitle(peer: Peer): string {
+  const device = peer.device
+  if (!device) {
+    return ''
+  }
+  const lines = [`First login ${dateTime(device.enrolled_at)}`, `Last try ${dateTime(device.last_used_at)} from ${device.last_from || 'an unknown IP'}`]
+  if (device.kind && device.kind !== 'software') {
+    lines.push(`Key stored in the ${device.kind === 'tpm' ? 'TPM' : 'Secure Enclave'}`)
+  }
+  return lines.join('\n')
+}
 
 // the details of an enrolled device, on hover
 function deviceTitle(peer: Peer): string {
@@ -440,7 +491,11 @@ async function copyKey() {
         <div v-if="gated">
           <dt class="text-slate-500 dark:text-slate-400">Device binding</dt>
           <dd class="mt-0.5">
-            <template v-if="bound">Only the enrolled device{{ server.machine_id ? ', on the same computer' : '' }}</template>
+            <template v-if="bound">
+              Only the enrolled device{{ server.machine_id ? ', on the same computer' : '' }}{{
+                server.device_approval ? ' · new peers need approval' : ''
+              }}
+            </template>
             <template v-else>Off: any device with the file and password</template>
           </dd>
         </div>
@@ -494,6 +549,13 @@ async function copyKey() {
         </div>
       </div>
 
+      <UiNotice v-if="pendingPeers.length && canManage()" tone="warning" class="mt-4">
+        {{
+          pendingPeers.length === 1
+            ? `A new device is waiting for approval: ${pendingPeers[0].device?.name || 'an unnamed device'} for ${pendingPeers[0].name}. Approve or reject it in the Device column.`
+            : `${pendingPeers.length} new devices are waiting for approval. Approve or reject them in the Device column.`
+        }}
+      </UiNotice>
       <UiNotice v-if="withoutUser && canManage()" tone="warning" class="mt-4">
         {{ withoutUser === 1 ? "1 peer has no user, so it can't log in." : `${withoutUser} peers have no user, so they can't log in.` }}
         Assign a user with Edit, in the peer's menu.
@@ -578,6 +640,16 @@ async function copyKey() {
                   <p class="text-xs text-slate-500 dark:text-slate-400">
                     {{ peer.device.wireguard_key === 'device' ? 'Uses its own key; the file no longer connects' : 'Connects with the configuration file' }}
                   </p>
+                </template>
+                <template v-else-if="peer.device?.state === 'pending'">
+                  <UiBadge tone="amber">Waiting for approval</UiBadge>
+                  <p class="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" :title="pendingTitle(peer)">
+                    {{ peer.device.name || 'Unnamed device' }}, from {{ peer.device.last_from || 'an unknown IP' }}
+                  </p>
+                  <div v-if="canManage()" class="mt-1.5 flex gap-2">
+                    <UiButton size="sm" variant="primary" @click="approveDevice(peer)">Approve</UiButton>
+                    <UiButton size="sm" @click="rejectDevice(peer)">Reject</UiButton>
+                  </div>
                 </template>
                 <template v-else-if="peer.device?.state === 'waiting'">
                   <UiBadge tone="amber">Waiting</UiBadge>

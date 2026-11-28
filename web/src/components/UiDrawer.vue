@@ -2,6 +2,7 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import AppIcon from './AppIcon.vue'
+import { helpOpen } from './UiHelp.vue'
 
 // a panel from the right, for the forms of add and edit
 const props = defineProps<{ open: boolean; title: string }>()
@@ -9,7 +10,8 @@ const emit = defineEmits<{ close: [] }>()
 const panel = ref<HTMLElement | null>(null)
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
+  // an open help closes first
+  if (event.key === 'Escape' && !helpOpen()) {
     emit('close')
   }
 }

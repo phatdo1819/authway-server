@@ -30,6 +30,10 @@ func (s *Service) System() (system.Snapshot, error) {
 	if err != nil {
 		return system.Snapshot{}, err
 	}
+	if status, err := s.FlowStatus(); err == nil && status.Mode != FlowsOff {
+		state.Flows = &system.FlowsState{Mode: status.Mode, Days: status.Days, Recording: status.Recording, Error: status.Error,
+			Bytes: status.Bytes, Lost: status.Lost, Dropped: status.Dropped, Rows: status.Rows, MaxRows: status.MaxRows}
+	}
 	for _, server := range servers {
 		if server.Enabled {
 			state.Servers = append(state.Servers, system.ServerInterface{Name: server.Name, Interface: server.Interface})

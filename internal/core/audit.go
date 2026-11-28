@@ -29,7 +29,7 @@ var webKinds = []string{
 	"admin_password_changed", "admin_mfa_on", "admin_mfa_removed", "settings_changed", "backup_made", "backup_restored",
 	"server_added", "server_changed", "server_deleted", "router_routes_updated",
 	"peer_added", "peer_changed", "peer_deleted", "peer_keys", "peer_config", "session_ended", "alerts_cleared",
-	"device_allowed", "device_revoked",
+	"device_allowed", "device_revoked", "device_approved", "device_rejected",
 	"user_added", "user_changed", "user_deleted", "user_mfa_on", "user_mfa_removed",
 }
 
@@ -211,6 +211,7 @@ func serverChanges(before, after *store.Server, names map[int64]string) changes 
 	c.toggle("lead to the login page", before.Redirect, after.Redirect)
 	c.toggle("device binding", before.DeviceBinding, after.DeviceBinding)
 	c.toggle("machine ID", before.MachineID, after.MachineID)
+	c.toggle("approval of the new peers' devices", before.DeviceApproval, after.DeviceApproval)
 	c.toggle("traffic between its peers", before.ClientToClient, after.ClientToClient)
 	routing := map[bool]string{false: "NAT", true: "routed"}
 	c.text("to the networks", routing[before.Routed], routing[after.Routed])

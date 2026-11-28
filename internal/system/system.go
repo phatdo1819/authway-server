@@ -456,6 +456,25 @@ type State struct {
 	Routed []RoutedServer
 	// the sync of Active Directory, nil when it's off
 	Directory *DirectoryState
+	// the flow logs, nil when they're off
+	Flows *FlowsState
+}
+
+// FlowsState is what the flow logs do.
+type FlowsState struct {
+	// internal or all
+	Mode string
+	Days int
+	// conntrack runs, or why it stopped
+	Recording bool
+	Error     string
+	// the kernel counts the bytes of the connections
+	Bytes bool
+	// since the start: the times the kernel dropped events, and the rows that didn't fit
+	Lost    uint64
+	Dropped uint64
+	Rows    int
+	MaxRows int
 }
 
 // DirectoryState is the latest sync of Active Directory.

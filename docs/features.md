@@ -48,6 +48,9 @@ server can add more:
   enrolled for it, the first one that logs in. The file and the password, copied to another computer, don't log in.
   Optionally the hardware of the computer is checked too. Once logged in, Authway gives the peer a WireGuard key of
   its own: from then on the configuration file, and every copy of it, doesn't even connect.
+- **Approval of new devices**, for each peer, and for the new peers of a server: a new computer logs in with the
+  right password and code, then waits until an administrator approves it, seeing its name and public IP. Someone with
+  a copy of the file and the password can't enroll their own computer before the user.
 
 ## Networks
 
@@ -58,6 +61,9 @@ server can add more:
   NAT and routed alike, whatever the configuration file says. With all its traffic through the tunnel, such a peer
   reaches the internet too, but no other private network. On a server with login each user has one peer, so these
   are the user's access rules.
+- **Ports in the rules**: a rule can allow only some traffic, TCP 3389 to `10.0.0.5` for remote desktop or TCP 445
+  to `files.corp.lan` for file sharing, with TCP, UDP or both, ports and ranges, and ping. The form has a column for
+  each: the address, network or name, the traffic, and the ports.
 - **Rules by name**: a rule can also be a name, `files.corp.lan`, or `*.corp.lan` for every name under it. The device
   then uses Authway Server as its DNS server, and each answer opens the addresses it gives. Authway Server also looks
   up exact names itself, so a device that kept an old answer, or that uses DNS over HTTPS, still reaches the ones
@@ -66,6 +72,9 @@ server can add more:
   server's address, while the rest of the peer's internet stays direct. The Authway app routes the site's real
   addresses, IPv6 included. The other WireGuard apps get a stand-in address from 198.18.0.0/16 instead, which the
   server passes on to the real one, over IPv4.
+- **New settings without a new file**: after each login, the Authway app takes the peer's settings as they are now,
+  its networks, DNS servers, names and the addresses of the server, and goes on with them, still logged in. The
+  WireGuard apps need the file again.
 - **NAT or routed**, for each server: its networks see the address of the host, with nothing to set up, or the address
   of each peer, for their logs and firewall rules. Routed, they can also start connections to the peers logged in.
   See [Routed servers](routed-servers.md).
@@ -77,6 +86,9 @@ server can add more:
 - **Who is logged in now**, the history of the logins, and the **connection history** of every peer, with a login or
   not: from which public IP, when, how long, how many bytes. Every list has search, filters by server and dates,
   pages, and a CSV download.
+- **Flow logs**, when you turn them on: which addresses and ports each peer reached, by hour, with the names of its
+  access rules, how many connections and how many bytes. Internal traffic only, or all of it; kept 90 days by
+  default, at most a million rows. Search, filters by server and dates, and a CSV download, in **Activity > Flows**.
 - **Alerts**: lockouts, copied configurations, a device that isn't the enrolled one.
 - **An audit trail**: every change made in the web UI is an event, with the administrator who made it, from which
   address, and what changed. Opening the configuration file of a peer, with its private key, is one too.

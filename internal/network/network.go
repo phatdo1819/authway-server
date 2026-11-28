@@ -75,13 +75,18 @@ type Peer struct {
 	Address6 netip.Addr
 	RouteAll bool
 	// the access rules: the networks the peer reaches, of both versions, inside Networks of its server; nil for all
-	// of them. With RouteAll, the peer also reaches the internet, but no other private network
-	Access []netip.Prefix
+	// of them. With RouteAll, the peer also reaches the internet, but no other private network. Access has the rules
+	// without ports, AccessPorts those with ports
+	Access      []netip.Prefix
+	AccessPorts []PortAccess
 	// names in the access rules: its DNS queries go to Authway Server, and it also reaches Learned, the addresses
 	// those names had in the answers, inside Networks of its server, and the stand-in addresses of their internet
-	// addresses. Only with Access
-	Names   bool
-	Learned []netip.Addr
+	// addresses. Only with Access. The names of rules with ports learn in LearnedPorts, by the text of their ports
+	// (Ports.String), one list for each of NamePorts
+	Names        bool
+	Learned      []netip.Addr
+	NamePorts    []Ports
+	LearnedPorts map[string][]netip.Addr
 }
 
 // Limited tells whether the peer has access rules.
@@ -90,14 +95,16 @@ func (p Peer) Limited() bool {
 }
 
 // Learned is an address that a peer reaches, learned from the answer to its DNS query for a name of its access rules:
-// Peer is one of its addresses, of the version of Address.
+// Peer is one of its addresses, of the version of Address. Ports is the text of the ports of the rule of the name,
+// "" for all the traffic.
 type Learned struct {
 	Peer    netip.Addr
 	Address netip.Addr
+	Ports   string
 }
 
 // LearnedMark is the conntrack mark of the connections opened to a learned address: they stay open when the address
-// expires, as long as the session does, and until the access rules of the peer change.
+// expires, as long as the session does, and until the access rules of the peer change for the name that opened it.
 const LearnedMark = 0x00415701
 
 // StandIn is an address of State.StandInNetwork, and the internet address that the connections to it go to.
@@ -135,6 +142,9 @@ type Network interface {
 	// ForgetLearned closes the connections of peers to the addresses they learned, of all of them without addresses:
 	// their access rules changed.
 	ForgetLearned(addresses ...netip.Addr) error
+	// ForgetLearnedTo closes the connections of peers to some of the addresses they learned only, each a Learned
+	// without its ports: the names that opened them changed, the others stay.
+	ForgetLearnedTo(learned ...Learned) error
 	// AddStandIns and RemoveStandIns set where stand-in addresses lead, or no longer, between two Apply.
 	AddStandIns(standIns ...StandIn) error
 	RemoveStandIns(standIns ...StandIn) error

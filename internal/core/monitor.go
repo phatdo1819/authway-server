@@ -14,6 +14,7 @@ const TickInterval = 5 * time.Second
 func (s *Service) Run(ctx context.Context) {
 	go s.runDirectory(ctx)
 	go s.runLookups(ctx)
+	go s.runFlows(ctx)
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	for {
@@ -125,6 +126,10 @@ func (s *Service) Tick() {
 			if err := prune(before); err != nil {
 				s.log.Error("can't prune the history", "table", name, "error", err)
 			}
+		}
+		// the flow logs keep their own days, and MaxFlowRows at most
+		if err := q.PruneFlows(now.AddDate(0, 0, -s.flowDaysLocked()).Unix(), MaxFlowRows); err != nil {
+			s.log.Error("can't prune the history", "table", "flows", "error", err)
 		}
 	}
 }

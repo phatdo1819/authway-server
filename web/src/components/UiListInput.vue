@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue'
+import UiHelp from './UiHelp.vue'
 
 // a list of short texts, one per row: networks, DNS servers
 const model = defineModel<string[]>({ required: true })
-defineProps<{ label: string; placeholder?: string; addLabel: string; error?: string; helper?: string }>()
+defineProps<{ label: string; placeholder?: string; addLabel: string; error?: string; helper?: string; help?: string }>()
 
 function remove(index: number) {
   model.value = model.value.filter((_, i) => i !== index)
@@ -12,7 +13,11 @@ function remove(index: number) {
 
 <template>
   <fieldset>
-    <legend class="mb-1.5 block text-sm font-medium text-slate-800 dark:text-slate-200">{{ label }}</legend>
+    <legend class="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-slate-800 dark:text-slate-200">
+      {{ label }}
+      <UiHelp v-if="help" :text="help" :label="label" />
+    </legend>
+    <span v-if="help" class="sr-only">{{ help }}</span>
     <div class="space-y-2">
       <div v-for="(_, index) in model" :key="index" class="flex gap-2">
         <input

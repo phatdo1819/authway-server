@@ -18,6 +18,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/phatdo1819/authway-server/internal/directory"
+	"github.com/phatdo1819/authway-server/internal/flows"
 	"github.com/phatdo1819/authway-server/internal/hostroute"
 	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/store"
@@ -159,6 +160,10 @@ type Options struct {
 	HostRoutes string
 	// reads Active Directory, for its users: nil, no directory
 	Directory directory.Client
+	// watches the connections of the peers for the flow logs, flows.Watch, and tells whether the kernel counts their
+	// bytes, flows.Accounting: nil, no flow logs
+	Flows     func(ctx context.Context, each func(flows.Event), lost func()) error
+	FlowBytes func() bool
 	Now       func() time.Time
 	// After runs f once d has passed, time.AfterFunc by default: the tests run it at once
 	After func(d time.Duration, f func())
@@ -237,6 +242,8 @@ type Service struct {
 	lookups      map[lookupKey]*lookup
 	lookupWake   chan struct{}
 	lookupsReset uint64
+	// the flow logs (see flowlog.go), with a lock of their own
+	flows *flowRecorder
 }
 
 // New ends the sessions that can't go on and applies the configuration.
@@ -288,6 +295,7 @@ func New(db *store.Store, net network.Network, opts Options) (*Service, error) {
 		standInOf:      map[netip.Addr]netip.Addr{},
 		lookups:        map[lookupKey]*lookup{},
 		lookupWake:     make(chan struct{}, 1),
+		flows:          newFlowRecorder(),
 	}
 	if opts.HostRoutes != "" {
 		s.hostReader = hostroute.NewReader(opts.HostRoutes)
@@ -342,6 +350,8 @@ func (s *Service) Close() {
 func (s *Service) applyLocked() {
 	s.syncDevicesLocked()
 	defer s.syncHostRoutesLocked()
+	// the peers of the flow logs, as they are now
+	defer s.configureFlowsLocked()
 	// the names to look up may have changed with the configuration, and the versions of the peers and servers that the
 	// saved addresses keep
 	s.wakeLookups()
@@ -468,12 +478,16 @@ func (s *Service) stateLocked() (network.State, error) {
 			// names in its rules: the addresses they had in its DNS answers
 			named := hasNames(peer.Access)
 			var learned []netip.Addr
+			var learnedPorts map[string][]netip.Addr
+			var namePorts []network.Ports
 			if named {
-				learned = s.learnedLocked(peer.ID)
+				learned, learnedPorts = s.learnedLocked(peer.ID)
+				namePorts = namePortsOf(peer.Access)
 			}
 			entry.Peers = append(entry.Peers, network.Peer{
 				PublicKey: public, PresharedKey: preshared, Address: address, Address6: other, RouteAll: peer.RouteAll,
-				Access: peerAccess(&peer, entry.Networks), Names: named, Learned: learned,
+				Access: peerAccess(&peer, entry.Networks), AccessPorts: peerPortAccess(&peer, entry.Networks),
+				Names: named, Learned: learned, NamePorts: namePorts, LearnedPorts: learnedPorts,
 			})
 		}
 		for _, session := range sessions {

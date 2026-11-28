@@ -34,6 +34,8 @@ services:
       # IPv6 in the tunnels, forwarded as IPv4 is. A host whose kernel has no IPv6 at all refuses it: take this line
       # and the networks part at the end away
       - net.ipv6.conf.all.forwarding=1
+      # the bytes of each connection, for the flow logs (Settings > General > Flow logs)
+      - net.netfilter.nf_conntrack_acct=1
     environment:
       # the public name or IP of this host: the default address of new WireGuard servers. In .env
       AUTHWAY_PUBLIC_HOST: ${AUTHWAY_PUBLIC_HOST:-vpn.example.com}

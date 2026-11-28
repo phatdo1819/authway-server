@@ -64,6 +64,7 @@ func (p *Portal) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", p.limited(p.login))
 	mux.HandleFunc("POST /api/logout", p.limited(p.logout))
 	mux.HandleFunc("POST /api/device-key", p.limited(p.deviceKey))
+	mux.HandleFunc("GET /api/config", p.limited(p.settings))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	})
@@ -132,6 +133,12 @@ func (p *Portal) deviceKey(w http.ResponseWriter, r *http.Request) {
 	}
 	address, host := p.client(r)
 	answer(w, p.core.DeviceKey(address, host, request))
+}
+
+// settings: the configuration file of the peer logged in, without its keys, for the Authway app
+func (p *Portal) settings(w http.ResponseWriter, r *http.Request) {
+	address, host := p.client(r)
+	answer(w, p.core.PeerSettings(address, host))
 }
 
 func (p *Portal) limited(next http.HandlerFunc) http.HandlerFunc {

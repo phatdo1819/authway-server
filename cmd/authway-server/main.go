@@ -25,6 +25,7 @@ import (
 	"github.com/phatdo1819/authway-server/internal/admin"
 	"github.com/phatdo1819/authway-server/internal/core"
 	"github.com/phatdo1819/authway-server/internal/directory"
+	"github.com/phatdo1819/authway-server/internal/flows"
 	"github.com/phatdo1819/authway-server/internal/hostroute"
 	"github.com/phatdo1819/authway-server/internal/names"
 	"github.com/phatdo1819/authway-server/internal/network"
@@ -356,11 +357,16 @@ func run(args []string) int {
 			return 1
 		}
 	}
-	service, err := core.New(db, net, core.Options{
+	options := core.Options{
 		LoginPort: c.loginPort, RedirectPort: c.redirectPort, DNSPort: c.dnsPort, ResolverPort: c.resolverPort, PublicHost: c.publicHost,
 		StandIns: c.standIns, Lookup: names.Ask, Version: version, Log: log, System: monitor, HostRoutes: c.hostRoutes,
 		Directory: directory.LDAP{},
-	})
+	}
+	// the flow logs read the connection tracking of the kernel: not on the fake network
+	if !c.fakeNetwork {
+		options.Flows, options.FlowBytes = flows.Watch, flows.Accounting
+	}
+	service, err := core.New(db, net, options)
 	if err != nil {
 		log.Error("can't start", "error", err)
 		return 1

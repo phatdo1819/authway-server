@@ -607,3 +607,44 @@ func TestDirectoryChecks(t *testing.T) {
 		}
 	}
 }
+
+// The checks of the flow logs, only when they're on: recording, starting, stopped, and what they miss.
+func TestFlowChecks(t *testing.T) {
+	m, _, c := newFake()
+	m.Sample()
+	base := State{StatsAt: c.now}
+	for _, check := range m.Snapshot(base).Checks {
+		if strings.HasPrefix(check.ID, "flows") {
+			t.Fatalf("off: %+v", check)
+		}
+	}
+	good := base
+	good.Flows = &FlowsState{Mode: "internal", Days: 90, Recording: true, Bytes: true, Rows: 1200, MaxRows: 1000000}
+	list := m.Snapshot(good).Checks
+	if check := checkOf(t, list, "flows"); check.Status != CheckOK || check.Detail != "Of internal traffic, kept 90 days: 1200 rows of at most 1000000." {
+		t.Errorf("recording: %+v", check)
+	}
+	for _, check := range list {
+		if check.ID == "flows_bytes" || check.ID == "flows_lost" || check.ID == "flows_full" {
+			t.Errorf("a warning while all is well: %+v", check)
+		}
+	}
+	bad := base
+	bad.Flows = &FlowsState{Mode: "all", Days: 30, Error: "conntrack: can't open netlink", Lost: 2, Dropped: 5, Rows: 950000,
+		MaxRows: 1000000}
+	list = m.Snapshot(bad).Checks
+	for id, want := range map[string]string{"flows": CheckError, "flows_bytes": CheckWarning, "flows_lost": CheckWarning,
+		"flows_full": CheckWarning} {
+		if check := checkOf(t, list, id); check.Status != want {
+			t.Errorf("%s: %+v, want %s", id, check, want)
+		}
+	}
+	if check := checkOf(t, list, "flows"); check.Detail != "Conntrack: can't open netlink. Authway Server tries again every 30 seconds." {
+		t.Errorf("stopped: %q", check.Detail)
+	}
+	starting := base
+	starting.Flows = &FlowsState{Mode: "internal", Days: 90, Bytes: true, MaxRows: 1000000}
+	if check := checkOf(t, m.Snapshot(starting).Checks, "flows"); check.Status != CheckUnknown {
+		t.Errorf("starting: %+v", check)
+	}
+}

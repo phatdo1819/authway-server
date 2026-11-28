@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { api, ApiError, type BackupSummary } from '../../api'
 import UiButton from '../../components/UiButton.vue'
+import UiHelp from '../../components/UiHelp.vue'
 import UiInput from '../../components/UiInput.vue'
 import UiModal from '../../components/UiModal.vue'
 import UiNotice from '../../components/UiNotice.vue'
@@ -191,12 +192,13 @@ function count(n: number, thing: string): string {
 
 <template>
   <section :class="section">
-    <h2 class="text-base font-semibold">Backup and restore</h2>
-    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-      A backup contains the whole configuration: servers and their keys, peers, users with their passwords and
-      authenticators, administrators, and these settings. It doesn't include history, events or alerts. It's encrypted
-      with a passphrase you choose.
-    </p>
+    <div class="flex items-center gap-1.5">
+      <h2 class="text-base font-semibold">Backup and restore</h2>
+      <UiHelp
+        label="Backup and restore"
+        text="A backup contains the whole configuration: servers and their keys, peers, users with their passwords and authenticators, administrators, and these settings. It doesn't include history, events or alerts. It's encrypted with a passphrase you choose."
+      />
+    </div>
     <div class="mt-4 flex flex-wrap gap-2">
       <UiButton icon="download" @click="openBackup">Download a backup</UiButton>
       <UiButton icon="upload" @click="openRestore">Restore a backup</UiButton>

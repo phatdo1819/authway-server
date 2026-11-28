@@ -55,6 +55,8 @@ const (
 	DeviceEnrolled = "enrolled"
 	DeviceWaiting  = "waiting" // a device can enroll at the next login
 	DeviceClosed   = "closed"  // none can: an administrator allows a new one
+	// a device logged in and waits for an administrator to approve it, on a peer with DeviceApproval
+	DevicePending = "pending"
 )
 
 // the WireGuard key a peer connects with, in the status and the web UI
@@ -245,6 +247,8 @@ func deviceState(device *store.Device, now time.Time) string {
 		return DeviceClosed
 	case device.Enrolled():
 		return DeviceEnrolled
+	case device.Waiting():
+		return DevicePending
 	case device.WindowUntil > now.Unix():
 		return DeviceWaiting
 	default:
@@ -331,8 +335,16 @@ func (s *Service) deviceStatusLocked(server *store.Server, peer *store.Peer, add
 		"required":        true,
 		"enrolled":        state == DeviceEnrolled,
 		"enrollment_open": state == DeviceWaiting,
-		"machine_id":      server.MachineID,
-		"challenge":       s.challenges.issue(address, now),
+		// Authway Server only: an older app sees a peer it can't log in for, until the device is approved. With
+		// approval, the next device that logs in waits for an administrator
+		"pending":    state == DevicePending,
+		"approval":   peer.DeviceApproval,
+		"machine_id": server.MachineID,
+		"challenge":  s.challenges.issue(address, now),
+	}
+	if state == DevicePending && keyID != nil {
+		// the app tells its user whether it's this computer that waits, or another one
+		status["this_device"] = *keyID != "" && subtle.ConstantTimeCompare([]byte(*keyID), []byte(DeviceKeyID(device.Key))) == 1
 	}
 	if state != DeviceEnrolled {
 		return status
@@ -367,8 +379,10 @@ func (s *Service) checkDeviceLocked(server *store.Server, peer *store.Peer, addr
 		return "challenge_expired", nil
 	}
 	device := s.deviceLocked(peer.ID)
-	enrolling := !device.Enrolled()
-	if enrolling && deviceState(device, now) != DeviceWaiting {
+	state := deviceState(device, now)
+	// a device that waits for its approval is checked like the one enrolled: no other one takes its place
+	enrolling := state != DeviceEnrolled && state != DevicePending
+	if enrolling && state != DeviceWaiting {
 		return "device_not_enrolled", nil
 	}
 	key, keyOK := decodeDeviceKey(proof.PublicKey)
@@ -425,28 +439,59 @@ func (s *Service) checkDeviceLocked(server *store.Server, peer *store.Peer, addr
 }
 
 // recordDeviceLoginLocked records a login of a device after its password: it enrolls the device, or updates its
-// last use. False when that device can't log in anymore: another one enrolled meanwhile, the window closed, or an
-// administrator revoked it.
+// last use. "device_pending" for a device that waits for an administrator to approve it, now or still; "device_mismatch"
+// when that device can't log in anymore: another one enrolled meanwhile, the window closed, or an administrator
+// revoked or rejected it.
 func (s *Service) recordDeviceLoginLocked(server *store.Server, peer *store.Peer, username string, enrolling *store.Device,
-	proof *DeviceProof, endpoint string, now time.Time) bool {
+	proof *DeviceProof, endpoint string, now time.Time) string {
 	device := s.deviceLocked(peer.ID)
 	if enrolling != nil {
 		if deviceState(device, now) != DeviceWaiting {
-			return false
+			return "device_mismatch"
 		}
 		enrolling.EnrolledAt, enrolling.LastUsedAt, enrolling.LastFrom = now.Unix(), now.Unix(), endpoint
+		enrolling.Pending = peer.DeviceApproval
 		if err := s.db.Q().SaveDevice(enrolling); err != nil {
 			s.log.Error("can't enroll a device", "peer", peer.Name, "error", err)
-			return false
+			return "device_mismatch"
+		}
+		if enrolling.Pending {
+			s.log.Warn("a new device waits for an administrator to approve it", "server", server.Name, "peer", peer.Name,
+				"user", username, "device", enrolling.Name, "kind", enrolling.Kind, "from", endpoint)
+			s.eventLocked(store.Event{Kind: "device_waiting", ServerName: server.Name, PeerName: peer.Name,
+				Username: username, Source: endpoint, Detail: deviceDetail(enrolling)})
+			return "device_pending"
 		}
 		s.log.Info("device enrolled", "server", server.Name, "peer", peer.Name, "user", username,
 			"device", enrolling.Name, "kind", enrolling.Kind, "from", endpoint)
 		s.eventLocked(store.Event{Kind: "device_enrolled", ServerName: server.Name, PeerName: peer.Name,
 			Username: username, Source: endpoint, Detail: deviceDetail(enrolling)})
-		return true
+		return ""
+	}
+	if device.Waiting() {
+		if device.Key != proof.PublicKey {
+			return "device_mismatch"
+		}
+		device.LastUsedAt, device.LastFrom = now.Unix(), endpoint
+		if !peer.DeviceApproval {
+			// the peer no longer needs it: the device is enrolled at this login
+			device.Pending, device.EnrolledAt = false, now.Unix()
+		}
+		if err := s.db.Q().SaveDevice(device); err != nil {
+			s.log.Error("can't save the device of a peer", "peer", peer.Name, "error", err)
+			return "device_mismatch"
+		}
+		if device.Pending {
+			return "device_pending"
+		}
+		s.log.Info("device enrolled", "server", server.Name, "peer", peer.Name, "user", username,
+			"device", device.Name, "kind", device.Kind, "from", endpoint)
+		s.eventLocked(store.Event{Kind: "device_enrolled", ServerName: server.Name, PeerName: peer.Name,
+			Username: username, Source: endpoint, Detail: deviceDetail(device)})
+		return ""
 	}
 	if !device.Enrolled() || device.Key != proof.PublicKey {
-		return false
+		return "device_mismatch"
 	}
 	device.LastUsedAt, device.LastFrom = now.Unix(), endpoint
 	if server.MachineID && device.MachineID == "" && proof.MachineID != "" {
@@ -457,7 +502,7 @@ func (s *Service) recordDeviceLoginLocked(server *store.Server, peer *store.Peer
 	if err := s.db.Q().SaveDevice(device); err != nil {
 		s.log.Error("can't save the device of a peer", "peer", peer.Name, "error", err)
 	}
-	return true
+	return ""
 }
 
 func deviceDetail(device *store.Device) string {
@@ -639,6 +684,61 @@ func (s *Service) AllowDevice(by Actor, peerID int64, hours int) (*PeerView, err
 	delete(s.mismatches, peer.ID)
 	s.applyLocked()
 	return s.peerViewLocked(peer)
+}
+
+// ApproveDevice enrolls the device that waits for a peer: it logs in from now on. keyID is the ID of the device key the
+// administrator saw (DeviceView.KeyID): another device that waits in its place meanwhile isn't approved by mistake.
+func (s *Service) ApproveDevice(by Actor, peerID int64, keyID string) (*PeerView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	peer, server, device, err := s.waitingDeviceLocked(peerID, keyID)
+	if err != nil {
+		return nil, err
+	}
+	device.Pending, device.EnrolledAt = false, s.now().Unix()
+	if err := s.db.Q().SaveDevice(device); err != nil {
+		return nil, err
+	}
+	s.log.Info("device approved", "server", server.Name, "peer", peer.Name, "device", device.Name, "by", by.Username)
+	s.changeLocked(by, store.Event{Kind: "device_approved", ServerName: server.Name, PeerName: peer.Name,
+		Username: s.usernameLocked(peer.UserID), Detail: deviceDetail(device)})
+	return s.peerViewLocked(peer)
+}
+
+// RejectDevice forgets the device that waits for a peer: the next device that logs in for it waits in its place, for
+// the hours of the settings.
+func (s *Service) RejectDevice(by Actor, peerID int64, keyID string) (*PeerView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	peer, server, device, err := s.waitingDeviceLocked(peerID, keyID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.openEnrollmentLocked(peer.ID, s.enrollWindowLocked()); err != nil {
+		return nil, err
+	}
+	s.log.Info("device rejected", "server", server.Name, "peer", peer.Name, "device", device.Name, "by", by.Username)
+	s.changeLocked(by, store.Event{Kind: "device_rejected", ServerName: server.Name, PeerName: peer.Name,
+		Username: s.usernameLocked(peer.UserID), Detail: deviceDetail(device)})
+	delete(s.mismatches, peer.ID)
+	return s.peerViewLocked(peer)
+}
+
+// waitingDeviceLocked is the device that waits for a peer, the one of keyID
+func (s *Service) waitingDeviceLocked(peerID int64, keyID string) (*store.Peer, *store.Server, *store.Device, error) {
+	peer, server, err := s.peerAndServerLocked(peerID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !server.DeviceBinding {
+		return nil, nil, nil, &ValidationError{Fields: map[string]string{"device": "device_binding_not_required"}}
+	}
+	device := s.deviceLocked(peer.ID)
+	if !device.Waiting() || subtle.ConstantTimeCompare([]byte(keyID), []byte(DeviceKeyID(device.Key))) != 1 {
+		// approved, rejected or replaced meanwhile
+		return nil, nil, nil, &ValidationError{Fields: map[string]string{"device": "not_waiting"}}
+	}
+	return peer, server, device, nil
 }
 
 // RevokeDevice forgets the device of a peer and ends its session: it can't log in until an administrator allows a

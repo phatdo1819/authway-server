@@ -23,7 +23,7 @@ exists. Authway Server lets you choose, for each server, how much a copy is wort
   recorded, and the peer can be blocked until an administrator looks at it.
 - **Device binding**, with the Authway app: only the computer enrolled for the peer logs in, so the file and the
   password copied to another computer don't. Then Authway gives the peer a WireGuard key of its own: the file, and
-  every copy of it, no longer even connects.
+  every copy of it, no longer even connects. A new computer can also wait until an administrator approves it.
 
 How each one works: [Protection against copied configuration files](docs/features.md#protection-against-copied-configuration-files).
 
@@ -31,7 +31,8 @@ How each one works: [Protection against copied configuration files](docs/feature
 
 - **[Authway](https://github.com/phatdo1819/authway)**, for Windows, macOS and Linux: imports the configuration file,
   opens its login window by itself when the tunnel comes up, and is the only app for the servers with device binding.
-  It also routes the sites that a peer reaches by name, with their real addresses.
+  It also routes the sites that a peer reaches by name, with their real addresses, and takes the peer's new settings
+  at each login, without a new file.
 - **The official WireGuard apps**, on Windows, macOS, Linux, iOS and Android: on a server with *WireGuard key only*
   they work as with any WireGuard server. On a server with *password* or *password and code*, the user turns the
   tunnel on, then opens any plain `http://` address in a browser, `http://neverssl.com` for example: the login page
@@ -59,11 +60,12 @@ The screenshots show a demo: the users, the peers and the addresses are made up.
 - Several WireGuard servers in one container, with IPv4 and IPv6 in the tunnels, and peers with a configuration file
   and a QR code.
 - For each server: the login, the protections against copied files, NAT or routed towards its networks, and the
-  traffic between peers. For each peer: all the networks of its server, or only some addresses, networks and names.
+  traffic between peers. For each peer: all the networks of its server, or only some addresses, networks and names,
+  down to some ports, such as TCP 3389 to `10.0.0.5`.
 - Sites on the internet by name, such as `app.example.com`: they go through the VPN and see the server's address,
   while the rest of the peer's internet stays direct. A server can even have no networks, just for that.
-- A web UI for the users, the peers, who is logged in, the connection history, the alerts, every change made, and a
-  System page that checks the host. Users in bulk from a CSV file, and two administrators can edit at once without
+- A web UI for the users, the peers, who is logged in, the connection history, flow logs of which addresses and ports
+  each peer reached, the alerts, every change made, and a System page that checks the host. Users in bulk from a CSV file, and two administrators can edit at once without
   undoing each other's changes.
 - Administrators with roles and authenticator apps, a password policy, and backups encrypted with a passphrase.
 

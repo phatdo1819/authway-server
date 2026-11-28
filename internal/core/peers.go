@@ -8,6 +8,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/phatdo1819/authway-server/internal/network"
 	"github.com/phatdo1819/authway-server/internal/peerconf"
 	"github.com/phatdo1819/authway-server/internal/store"
 )
@@ -25,6 +26,9 @@ type PeerInput struct {
 	// the access rules: the networks the peer reaches, inside the ones of its server; [] for all of them. Missing,
 	// they stay as they are
 	Access *[]string `json:"access"`
+	// a new device waits for an administrator to approve it. Missing, it stays as it is: for a new peer, the choice
+	// of its server
+	DeviceApproval *bool `json:"device_approval"`
 	// when edited: the version the form opened with, see ChangedError; 0 doesn't check it
 	Version int64 `json:"version"`
 }
@@ -41,7 +45,7 @@ func (s *Service) CreatePeer(by Actor, serverID int64, input PeerInput) (*PeerVi
 	if err != nil {
 		return nil, err
 	}
-	peer := &store.Peer{ServerID: serverID}
+	peer := &store.Peer{ServerID: serverID, DeviceApproval: server.DeviceApproval}
 	if err := s.checkPeer(input, server, peer, peers); err != nil {
 		return nil, err
 	}
@@ -82,6 +86,9 @@ func (s *Service) CreatePeer(by Actor, serverID int64, input PeerInput) (*PeerVi
 	}
 	if !peer.Enabled {
 		detail += ", disabled"
+	}
+	if server.DeviceBinding && peer.DeviceApproval {
+		detail += ", new devices need approval"
 	}
 	s.changeLocked(by, store.Event{Kind: "peer_added", ServerName: server.Name, PeerName: peer.Name,
 		Username: s.usernameLocked(peer.UserID), Detail: detail})
@@ -129,6 +136,7 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	c.text("user", s.usernameLocked(before.UserID), s.usernameLocked(peer.UserID))
 	c.toggle("all the traffic through the tunnel", before.RouteAll, peer.RouteAll)
 	c.text("reaches", accessText(before.Access), accessText(peer.Access))
+	c.toggle("approval of new devices", before.DeviceApproval, peer.DeviceApproval)
 	if len(c) > 0 {
 		s.changeLocked(by, store.Event{Kind: "peer_changed", ServerName: server.Name, PeerName: peer.Name,
 			Username: s.usernameLocked(peer.UserID), Detail: c.String()})
@@ -136,9 +144,15 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 	if !peer.Enabled || peer.UserID != before.UserID {
 		s.endSessionsLocked(func(session store.Session) bool { return session.PeerID == id }, EndPeerChanged)
 	}
-	// what its names opened no longer holds: the connections it opened to those addresses close too
-	if hasNames(before.Access) && (!slices.Equal(before.Access, peer.Access) || !peer.Enabled || peer.UserID != before.UserID) {
+	// what its names opened no longer holds: the connections it opened to those addresses close too. When only its
+	// rules changed, only what the names whose rules changed opened, once the configuration of now is applied
+	var closed []network.Learned
+	switch {
+	case !hasNames(before.Access):
+	case !peer.Enabled || peer.UserID != before.UserID:
 		s.forgetLearnedLocked(server, &before)
+	case !slices.Equal(before.Access, peer.Access):
+		closed = s.forgetChangedNamesLocked(peer)
 	}
 	if peer.UserID != before.UserID {
 		s.forgetPeerLocked(id)
@@ -146,6 +160,7 @@ func (s *Service) UpdatePeer(by Actor, id int64, input PeerInput) (*PeerView, er
 		s.resetDeviceLocked(server, id)
 	}
 	s.applyLocked()
+	s.closeLearnedLocked(server, peer, closed)
 	return s.peerViewLocked(peer)
 }
 
@@ -248,17 +263,53 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 	if err != nil {
 		return "", "", notFound(err)
 	}
-	serverKey, err := wgtypes.ParseKey(server.PrivateKey)
+	config, err := s.peerConfigLocked(server, peer)
 	if err != nil {
 		return "", "", err
+	}
+	s.changeLocked(by, store.Event{Kind: "peer_config", ServerName: server.Name, PeerName: peer.Name,
+		Username: s.usernameLocked(peer.UserID)})
+	return peerconf.FileName(server.Name, peer.Name), config.String(), nil
+}
+
+// PeerSettings is GET /api/config of the login page: the configuration file of the peer logged in, as it is now,
+// without its keys, which its device has. The Authway app takes the new settings of its VPN from it after the login:
+// the networks, the DNS servers, the names, the addresses of the server, without a new file. Not an event: nothing
+// secret.
+func (s *Service) PeerSettings(address netip.Addr, host string) Answer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	server, peer, ok := s.findPeerLocked(address, host)
+	if !ok {
+		return fail(403, "forbidden")
+	}
+	if peer.Blocked {
+		return fail(403, "blocked")
+	}
+	if session, ok := s.openSessionOfLocked(peer.ID); !ok || session.PausedAt != 0 || s.now().Unix() >= session.ExpiresAt {
+		return fail(401, "not_authenticated")
+	}
+	config, err := s.peerConfigLocked(server, peer)
+	if err != nil {
+		s.log.Error("can't make the settings of a peer", "peer", peer.Name, "error", err)
+		return fail(500, "internal_error")
+	}
+	return Answer{Status: 200, Body: map[string]any{"config": config.Settings()}}
+}
+
+// peerConfigLocked is the configuration file of a peer
+func (s *Service) peerConfigLocked(server *store.Server, peer *store.Peer) (*peerconf.Config, error) {
+	serverKey, err := wgtypes.ParseKey(server.PrivateKey)
+	if err != nil {
+		return nil, err
 	}
 	tunnel, err := netip.ParsePrefix(server.Network)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	address, err := netip.ParseAddr(peer.Address)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	tunnel6 := tunnel6Of(server)
 	// invalid without an IPv6 network
@@ -296,9 +347,7 @@ func (s *Service) PeerConfig(by Actor, id int64) (string, string, error) {
 	if server.Gated() {
 		config.Login = peerconf.LoginURL(serverAddress(tunnel), s.opts.LoginPort)
 	}
-	s.changeLocked(by, store.Event{Kind: "peer_config", ServerName: server.Name, PeerName: peer.Name,
-		Username: s.usernameLocked(peer.UserID)})
-	return peerconf.FileName(server.Name, peer.Name), config.String(), nil
+	return &config, nil
 }
 
 // linkedNetworksLocked are the tunnel networks of the servers linked to a server: the ones its peers reach, and the
@@ -375,6 +424,9 @@ func (s *Service) checkPeer(input PeerInput, server *store.Server, peer *store.P
 	peer.UserID = input.UserID
 	peer.RouteAll = input.RouteAll
 	peer.Access = access
+	if input.DeviceApproval != nil {
+		peer.DeviceApproval = *input.DeviceApproval
+	}
 	return nil
 }
 

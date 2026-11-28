@@ -295,18 +295,22 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 		}
 		return fail(401, "invalid_credentials")
 	}
-	if binding && !s.recordDeviceLoginLocked(server, peer, user.Username, enrolling, request.Device, endpoint, now) {
-		// another device enrolled meanwhile, the window closed, or an administrator revoked the device
-		s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now, limit)
-		return fail(401, "device_mismatch")
-	}
-	s.failures.success(peer.ID, endpoint)
-	// the first code that works shows the key was scanned
-	if withOTP && current.TOTPConfirmedAt == 0 {
-		if err := s.db.Q().ConfirmUserTOTP(user.ID, now.Unix()); err != nil {
-			s.log.Warn("can't record the first code of an authenticator", "user", user.Username, "error", err)
+	if binding {
+		switch s.recordDeviceLoginLocked(server, peer, user.Username, enrolling, request.Device, endpoint, now) {
+		case "":
+		case "device_pending":
+			// the right password and code, from a device that waits for an administrator: not a failure
+			s.failures.success(peer.ID, endpoint)
+			s.confirmTOTPLocked(user, current, withOTP, now)
+			return fail(403, "device_pending")
+		default:
+			// another device enrolled meanwhile, the window closed, or an administrator revoked the device
+			s.loginFailedLocked(server, peer, user.Username, address, endpoint, "another device", now, limit)
+			return fail(401, "device_mismatch")
 		}
 	}
+	s.failures.success(peer.ID, endpoint)
+	s.confirmTOTPLocked(user, current, withOTP, now)
 	expires, err := s.openSessionLocked(server, peer, user, endpoint)
 	if err != nil {
 		s.log.Error("can't open the gate", "peer", peer.Name, "error", err)
@@ -319,6 +323,15 @@ func (s *Service) Login(address netip.Addr, host string, request LoginRequest) A
 	}
 	s.log.Info("logged in", "user", user.Username, "server", server.Name, "peer", peer.Name, "address", address, "from", endpoint)
 	return Answer{Status: 200, Body: map[string]any{"result": "success", "user": user.Username, "expires": isoTime(expires)}}
+}
+
+// confirmTOTPLocked records the first code of an authenticator that works: it shows the key was scanned
+func (s *Service) confirmTOTPLocked(user, current *store.User, withOTP bool, now time.Time) {
+	if withOTP && current.TOTPConfirmedAt == 0 {
+		if err := s.db.Q().ConfirmUserTOTP(user.ID, now.Unix()); err != nil {
+			s.log.Warn("can't record the first code of an authenticator", "user", user.Username, "error", err)
+		}
+	}
 }
 
 // openSessionLocked opens the gate for a peer, or starts its session again: a login from another public IP moves

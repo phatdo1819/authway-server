@@ -55,9 +55,11 @@ type ServerInput struct {
 	BlockCopies       bool     `json:"block_copies"`
 	Redirect          bool     `json:"redirect"`
 	FallbackEndpoints []string `json:"fallback_endpoints"`
-	// only with a login: the peers log in from their enrolled device, and with MachineID from its machine
-	DeviceBinding bool `json:"device_binding"`
-	MachineID     bool `json:"machine_id"`
+	// only with a login: the peers log in from their enrolled device, and with MachineID from its machine.
+	// DeviceApproval is the choice of the new peers: their new device waits for an administrator to approve it
+	DeviceBinding  bool `json:"device_binding"`
+	MachineID      bool `json:"machine_id"`
+	DeviceApproval bool `json:"device_approval"`
 	// the peers reach each other, and start connections to the peers of the servers listed, by id
 	ClientToClient   bool    `json:"client_to_client"`
 	ReachableServers []int64 `json:"reachable_servers"`
@@ -284,7 +286,7 @@ func (s *Service) openEnrollmentsLocked(server *store.Server) {
 		return
 	}
 	for _, peer := range peers {
-		if device, ok := devices[peer.ID]; ok && device.Enrolled() {
+		if device, ok := devices[peer.ID]; ok && (device.Enrolled() || device.Waiting()) {
 			continue
 		}
 		if err := s.openEnrollmentLocked(peer.ID, s.enrollWindowLocked()); err != nil {
@@ -562,6 +564,7 @@ func (s *Service) checkServer(input ServerInput, server *store.Server, servers [
 	gated := input.AuthMode == store.AuthPassword || input.AuthMode == store.AuthPasswordOTP
 	server.DeviceBinding = gated && input.DeviceBinding
 	server.MachineID = server.DeviceBinding && input.MachineID
+	server.DeviceApproval = server.DeviceBinding && input.DeviceApproval
 	server.ClientToClient = input.ClientToClient
 	server.ReachableServers = reachable
 	// the networks start nothing to the peers of a translated server: they can't tell them apart

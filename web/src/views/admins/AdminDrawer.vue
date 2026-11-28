@@ -111,7 +111,7 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
         autocomplete="off"
         :disabled="Boolean(admin)"
         :error="fieldMessage(errors.username)"
-        :helper="admin ? 'Usernames can\'t be changed. To use a different name, add a new administrator.' : 'Letters, digits and . _ @ - only.'"
+        :help="admin ? 'Usernames can\'t be changed. To use a different name, add a new administrator.' : 'Letters, digits and . _ @ - only.'"
       />
       <UiInput v-model="form.full_name" label="Full name" optional :error="fieldMessage(errors.full_name)" />
       <div>
@@ -127,7 +127,8 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
           autocomplete="off"
           mono
           :error="fieldMessage(errors.password)"
-          :helper="`Give this to them. They'll choose their own when they first log in. ${policyText(session.me?.password_policy, true)}`"
+          :helper="policyText(session.me?.password_policy, true)"
+          help="Give this to them. They'll choose their own when they first log in."
         />
         <div class="mt-2 flex gap-2">
           <UiButton size="sm" icon="refresh" @click="regenerate">New password</UiButton>
@@ -138,7 +139,7 @@ const roleOptions = roles.map((role) => ({ value: role.value, label: role.label 
         v-if="admin && !own"
         v-model="form.disabled"
         label="Disabled"
-        description="The administrator is logged out now and can't log in again."
+        help="The administrator is logged out now and can't log in again."
       />
       <UiNotice v-if="error" tone="error">{{ error }}</UiNotice>
     </form>

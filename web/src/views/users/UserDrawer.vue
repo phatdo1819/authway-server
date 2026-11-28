@@ -120,7 +120,7 @@ function useTheirs() {
         autocomplete="off"
         :disabled="fromDirectory"
         :error="fieldMessage(errors.username)"
-        helper="Letters, digits and . _ @ - only. The user enters this on the VPN login page."
+        help="Letters, digits and . _ @ - only. The user enters this on the VPN login page."
       />
       <UiInput v-model="form.full_name" label="Full name" optional :disabled="fromDirectory" :error="fieldMessage(errors.full_name)" />
       <template v-if="!fromDirectory">
@@ -131,7 +131,8 @@ function useTheirs() {
           autocomplete="new-password"
           :optional="Boolean(user)"
           :error="fieldMessage(errors.password)"
-          :helper="user ? `Leave empty to keep the current password. Setting a new one logs the user out. ${policy}` : policy"
+          :helper="policy"
+          :help="user ? 'Leave empty to keep the current password. Setting a new one logs the user out.' : undefined"
         />
         <UiInput
           v-model="confirmPassword"
@@ -155,7 +156,7 @@ function useTheirs() {
         v-model="form.disabled"
         label="Disabled"
         :disabled="fromDirectory"
-        :description="
+        :help="
           fromDirectory
             ? 'Follows Active Directory: disabled when the account is disabled there or leaves the group.'
             : `The user is logged out now and can't log in again. Their peers are kept.`

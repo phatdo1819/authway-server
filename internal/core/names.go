@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,12 @@ const (
 	// a stand-in address keeps its internet address this long after the last peer that could use it: a device that
 	// keeps an answer longer than it should still reaches the same site, not another one
 	StandInGrace = 24 * time.Hour
+	// the names kept for each address a peer learned, the latest ones: one left out only closes the address sooner
+	// when the rules change
+	maxTaughtBy = 16
+	// the most addresses whose connections close one by one when the rules of a peer change, a conntrack command each:
+	// past it, all the connections of the peer to the addresses of its names close, as when it's disabled
+	maxClosedOneByOne = 32
 )
 
 // standIn is the internet address that a stand-in address leads to, and until when a peer may use it
@@ -150,13 +157,84 @@ func (s *Service) standInListLocked() []network.StandIn {
 }
 
 // learnedPeer is what a peer learned: its interface and its addresses in its tunnel, the keys of the sets of the
-// firewall, and until when each address it learned stays open
+// firewall, and until when each address it learned stays open, for the traffic of the ports of the rules of its name
 type learnedPeer struct {
 	iface        string
 	peer4, peer6 netip.Addr
-	until        map[netip.Addr]time.Time
+	until        map[learnedKey]time.Time
+	// the names that taught each address, until when each holds it open: a change of the rules forgets only what the
+	// names whose rules changed taught. None for an address saved by a version that didn't keep them.
+	from map[learnedKey]map[string]time.Time
 	// a warning when it reached MaxLearned, once
 	full bool
+}
+
+func newLearnedPeer(iface string, peer4, peer6 netip.Addr) *learnedPeer {
+	return &learnedPeer{iface: iface, peer4: peer4, peer6: peer6, until: map[learnedKey]time.Time{},
+		from: map[learnedKey]map[string]time.Time{}}
+}
+
+// teach notes that a name taught an address, until a time; true when that's new. maxTaughtBy names at most: the one
+// that runs out first makes room.
+func (e *learnedPeer) teach(key learnedKey, name string, until time.Time) bool {
+	taught := e.from[key]
+	if taught == nil {
+		taught = map[string]time.Time{}
+		e.from[key] = taught
+	}
+	if before, known := taught[name]; known {
+		if !until.After(before) {
+			return false
+		}
+		taught[name] = until
+		return true
+	}
+	if len(taught) >= maxTaughtBy {
+		earliest := ""
+		for other, at := range taught {
+			if earliest == "" || at.Before(taught[earliest]) {
+				earliest = other
+			}
+		}
+		if !until.After(taught[earliest]) {
+			return false
+		}
+		delete(taught, earliest)
+	}
+	taught[name] = until
+	return true
+}
+
+// learnedKey is an address a peer learned, and the text of the ports of the rule of its name: "" for all the traffic.
+// The same address learned for two names with other ports is in both sets of the firewall.
+type learnedKey struct {
+	address netip.Addr
+	ports   string
+}
+
+func (k learnedKey) String() string {
+	if k.ports == "" {
+		return k.address.String()
+	}
+	return k.address.String() + " " + k.ports
+}
+
+// portsOfName are the texts of the ports of the rules a name matches, each once: "" alone when one of them allows all
+// the traffic
+func portsOfName(rules []names.Rule, name string) []string {
+	var list []string
+	for _, rule := range rules {
+		if !rule.Matches(name) {
+			continue
+		}
+		if rule.Ports == "" {
+			return []string{""}
+		}
+		if !slices.Contains(list, rule.Ports) {
+			list = append(list, rule.Ports)
+		}
+	}
+	return list
 }
 
 // hasNames tells whether access rules have names
@@ -298,9 +376,14 @@ func (s *Service) learnLocked(server *store.Server, peer *store.Peer, asked stri
 	standIns := !peer.RouteAll && mode == learnAnswer && s.standInsOn(server)
 	routed := !peer.RouteAll && mode == learnRoutes
 	internet := standIns || routed
+	// the traffic it allows: the ports of the rules of the name
+	portsList := portsOfName(names.Rules(peer.Access), asked)
+	if len(portsList) == 0 {
+		return nil, nil, false
+	}
 	entry := s.learned[peer.ID]
 	if entry == nil || entry.iface != server.Interface || entry.peer4 != peer4 || entry.peer6 != peer6 {
-		entry = &learnedPeer{iface: server.Interface, peer4: peer4, peer6: peer6, until: map[netip.Addr]time.Time{}}
+		entry = newLearnedPeer(server.Interface, peer4, peer6)
 		s.learned[peer.ID] = entry
 	}
 	now := s.now()
@@ -348,39 +431,63 @@ func (s *Service) learnLocked(server *store.Server, peer *store.Peer, asked stri
 			continue
 		}
 		until := now.Add(min(answer.TTL+LearnedMargin, LearnedMax))
-		if before, known := entry.until[learn]; known {
-			if until.After(before) {
-				entry.until[learn] = until
+		// the latest time the address stays open, for the traffic of any of the ports
+		var latest time.Time
+		for _, ports := range portsList {
+			learnedAs := learnedKey{learn, ports}
+			if before, known := entry.until[learnedAs]; known {
+				if until.After(before) {
+					entry.until[learnedAs] = until
+					s.namesChanged = true
+				}
+			} else if len(entry.until) >= MaxLearned {
+				if !entry.full {
+					s.log.Warn("a peer learned too many addresses from its names: the new ones wait for others to expire",
+						"server", server.Name, "peer", peer.Name, "addresses", MaxLearned)
+					entry.full = true
+				}
+				continue
+			} else {
+				entry.until[learnedAs] = until
+				s.namesChanged = true
+				added = append(added, network.Learned{Peer: key, Address: learn, Ports: ports})
+				text := address.String()
+				switch {
+				case learn != address:
+					text += " as " + learn.String()
+				case routed && !insideAny(netip.PrefixFrom(address, address.BitLen()), networks):
+					text += " routed by the app"
+				}
+				if ports != "" {
+					text += " (" + ports + ")"
+				}
+				texts = append(texts, text)
+			}
+			// the name, for a change of the rules
+			if entry.teach(learnedAs, asked, until) {
 				s.namesChanged = true
 			}
-		} else if len(entry.until) >= MaxLearned {
-			if !entry.full {
-				s.log.Warn("a peer learned too many addresses from its names: the new ones wait for others to expire",
-					"server", server.Name, "peer", peer.Name, "addresses", MaxLearned)
-				entry.full = true
+			if entry.until[learnedAs].After(latest) {
+				latest = entry.until[learnedAs]
 			}
+		}
+		if latest.IsZero() {
+			// none: too many already
 			continue
-		} else {
-			entry.until[learn] = until
-			s.namesChanged = true
-			added = append(added, network.Learned{Peer: key, Address: learn})
-			switch {
-			case learn != address:
-				texts = append(texts, address.String()+" as "+learn.String())
-			case routed && !insideAny(netip.PrefixFrom(address, address.BitLen()), networks):
-				texts = append(texts, address.String()+" routed by the app")
-			default:
-				texts = append(texts, address.String())
-			}
+		}
+		// the flow logs show the name of the destination
+		s.flows.noteName(address, asked)
+		if learn != address {
+			s.flows.noteName(learn, asked)
 		}
 		if routed && !insideAny(netip.PrefixFrom(address, address.BitLen()), networks) {
 			// for as long as the firewall lets it through
-			routeList = append(routeList, names.Address{Addr: address, TTL: entry.until[learn].Sub(now)})
+			routeList = append(routeList, names.Address{Addr: address, TTL: latest.Sub(now)})
 		}
 		if learn != address {
 			// the stand-in address leads to the internet one as long as a peer may use it
-			if record := s.standIns[learn]; entry.until[learn].After(record.until) {
-				record.until = entry.until[learn]
+			if record := s.standIns[learn]; latest.After(record.until) {
+				record.until = latest
 			}
 			change[address] = learn
 		}
@@ -410,38 +517,59 @@ func (s *Service) learnLocked(server *store.Server, peer *store.Peer, asked stri
 	return change, routeList, true
 }
 
-// learnedLocked are the addresses a peer learned and that are still open, sorted
-func (s *Service) learnedLocked(id int64) []netip.Addr {
+// learnedLocked are the addresses a peer learned and that are still open, sorted: for all the traffic, and by the
+// text of the ports of the rules of their names
+func (s *Service) learnedLocked(id int64) ([]netip.Addr, map[string][]netip.Addr) {
 	entry := s.learned[id]
 	if entry == nil {
-		return nil
+		return nil, nil
 	}
 	now := s.now()
 	list := make([]netip.Addr, 0, len(entry.until))
-	for address, until := range entry.until {
-		if now.Before(until) {
-			list = append(list, address)
+	var byPorts map[string][]netip.Addr
+	for learnedAs, until := range entry.until {
+		switch {
+		case !now.Before(until):
+		case learnedAs.ports == "":
+			list = append(list, learnedAs.address)
+		default:
+			if byPorts == nil {
+				byPorts = map[string][]netip.Addr{}
+			}
+			byPorts[learnedAs.ports] = append(byPorts[learnedAs.ports], learnedAs.address)
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Less(list[j]) })
-	return list
+	for _, addresses := range byPorts {
+		sort.Slice(addresses, func(i, j int) bool { return addresses[i].Less(addresses[j]) })
+	}
+	return list, byPorts
 }
 
 // pruneLearnedLocked closes the learned addresses whose time is up, at each Tick
 func (s *Service) pruneLearnedLocked(now time.Time) {
 	for id, entry := range s.learned {
 		var gone []network.Learned
-		for address, until := range entry.until {
+		for learnedAs, until := range entry.until {
 			if now.Before(until) {
 				continue
 			}
-			delete(entry.until, address)
+			delete(entry.until, learnedAs)
+			delete(entry.from, learnedAs)
 			s.namesChanged = true
 			key := entry.peer4
-			if address.Is6() {
+			if learnedAs.address.Is6() {
 				key = entry.peer6
 			}
-			gone = append(gone, network.Learned{Peer: key, Address: address})
+			gone = append(gone, network.Learned{Peer: key, Address: learnedAs.address, Ports: learnedAs.ports})
+		}
+		// the names whose time is up, of the addresses that others still hold open
+		for _, taught := range entry.from {
+			for name, until := range taught {
+				if !now.Before(until) {
+					delete(taught, name)
+				}
+			}
 		}
 		if len(entry.until) < MaxLearned {
 			entry.full = false
@@ -494,8 +622,9 @@ func (s *Service) dropLearnedLocked(id int64) {
 }
 
 // forgetLearnedLocked forgets what a peer with names learned, and closes the connections it opened to those addresses:
-// its rules, or the networks of its server, changed. The callers apply the configuration next, which takes the
-// addresses out of the firewall.
+// it's disabled or gets another user, or the networks of its server changed. The callers apply the configuration
+// next, which takes the addresses out of the firewall. A change of its rules alone forgets less: see
+// forgetChangedNamesLocked.
 func (s *Service) forgetLearnedLocked(server *store.Server, peer *store.Peer) {
 	s.dropLearnedLocked(peer.ID)
 	if !hasNames(peer.Access) {
@@ -506,6 +635,77 @@ func (s *Service) forgetLearnedLocked(server *store.Server, peer *store.Peer) {
 		return
 	}
 	if err := s.net.ForgetLearned(addresses...); err != nil {
+		s.log.Warn("can't close the connections of a peer to the addresses of its names", "peer", peer.Name, "error", err)
+	}
+}
+
+// forgetChangedNamesLocked forgets, when the rules of a peer with names changed, what the names whose rules changed
+// taught it: a name no longer in its rules, or whose rules allow other ports now (its device asks again, or Authway
+// Server looks it up again, and learns it with the ports of now). An address that another name still opens with the
+// same ports stays, until that name's time is up, and so do the connections to it. An address saved by a version
+// that didn't keep its names goes. It returns what closed, for closeLearnedLocked once the configuration is applied.
+func (s *Service) forgetChangedNamesLocked(peer *store.Peer) []network.Learned {
+	entry := s.learned[peer.ID]
+	if entry == nil {
+		return nil
+	}
+	rules := names.Rules(peer.Access)
+	now := s.now()
+	closed := map[netip.Addr]bool{}
+	for learnedAs := range entry.until {
+		var latest time.Time
+		for name, until := range entry.from[learnedAs] {
+			if now.Before(until) && slices.Contains(portsOfName(rules, name), learnedAs.ports) {
+				if until.After(latest) {
+					latest = until
+				}
+				continue
+			}
+			delete(entry.from[learnedAs], name)
+		}
+		if latest.IsZero() {
+			delete(entry.until, learnedAs)
+			delete(entry.from, learnedAs)
+			closed[learnedAs.address] = true
+			continue
+		}
+		// as long as the names left hold it open
+		entry.until[learnedAs] = latest
+	}
+	s.namesChanged = true
+	if len(entry.until) < MaxLearned {
+		entry.full = false
+	}
+	list := make([]network.Learned, 0, len(closed))
+	for address := range closed {
+		key := entry.peer4
+		if address.Is6() {
+			key = entry.peer6
+		}
+		list = append(list, network.Learned{Peer: key, Address: address})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Address.Less(list[j].Address) })
+	if len(entry.until) == 0 {
+		s.dropLearnedLocked(peer.ID)
+	}
+	return list
+}
+
+// closeLearnedLocked closes the connections of a peer to the addresses its names no longer open, after the
+// configuration is applied: the next packet of each goes through the rules of now. All the connections to such an
+// address close, whatever their ports, even when another name still opens it for some. Past maxClosedOneByOne
+// addresses, all its connections to the addresses of its names close.
+func (s *Service) closeLearnedLocked(server *store.Server, peer *store.Peer, closed []network.Learned) {
+	if len(closed) == 0 {
+		return
+	}
+	var err error
+	if len(closed) > maxClosedOneByOne {
+		err = s.net.ForgetLearned(addressesOf(server, peer.Address)...)
+	} else {
+		err = s.net.ForgetLearnedTo(closed...)
+	}
+	if err != nil {
 		s.log.Warn("can't close the connections of a peer to the addresses of its names", "peer", peer.Name, "error", err)
 	}
 }
